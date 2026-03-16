@@ -7,17 +7,29 @@ from pathlib import Path
 from typing import Any
 
 
+class SqlLspConfigLoadError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class SqlLspConfig:
     default_dialect: str
     overrides: dict[str, str]
 
     @staticmethod
+    def default() -> "SqlLspConfig":
+        return SqlLspConfig(default_dialect="starrocks", overrides={})
+
+    @staticmethod
     def load(root: Path) -> "SqlLspConfig":
         cfg_path = root / ".opencode" / "sql-lsp.json"
         if not cfg_path.exists():
-            return SqlLspConfig(default_dialect="starrocks", overrides={})
-        data: Any = json.loads(cfg_path.read_text(encoding="utf-8"))
+            return SqlLspConfig.default()
+
+        try:
+            data: Any = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise SqlLspConfigLoadError(f"Failed to load config {cfg_path}: {e}") from e
         default_dialect = data.get("defaultDialect")
         if not isinstance(default_dialect, str) or not default_dialect.strip():
             default_dialect = "starrocks"
@@ -35,7 +47,9 @@ class SqlLspConfig:
         return SqlLspConfig(default_dialect=default_dialect, overrides=overrides)
 
     def dialect_for_path(self, relative_path: str) -> str:
+        relative_path_posix = relative_path.replace("\\", "/")
         for pattern, dialect in self.overrides.items():
-            if fnmatch(relative_path, pattern):
+            pattern_posix = pattern.replace("\\", "/")
+            if fnmatch(relative_path_posix, pattern_posix):
                 return dialect
         return self.default_dialect
