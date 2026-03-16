@@ -48,7 +48,7 @@ class _DocState:
 
 class OpenCodeSqlLanguageServer(LanguageServer):
     def __init__(self) -> None:
-        super().__init__("opencode-sql-lsp", "0.1.0", max_workers=2)
+        super().__init__("opencode-sql-lsp", "0.1.1", max_workers=2)
         self._workspace_roots: list[Path] = []
         self._config_cache: dict[Path, _ConfigCacheEntry] = {}
         self._doc_state: dict[str, _DocState] = {}
