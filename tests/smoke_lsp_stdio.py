@@ -47,23 +47,45 @@ def read_until_response(stream, request_id: int) -> dict:
 
 
 def main() -> int:
-    workspace = Path(os.environ.get("WORKSPACE", "/tmp/sql-lsp-workspace")).resolve()
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / ".opencode").mkdir(exist_ok=True)
-    cfg = {
+    base = Path(os.environ.get("WORKSPACE", "/tmp/sql-lsp-workspace")).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+
+    workspace_a = base / "ws-a"
+    workspace_a.mkdir(parents=True, exist_ok=True)
+    (workspace_a / ".opencode").mkdir(exist_ok=True)
+    cfg_a = {
         "defaultDialect": "starrocks",
-        "overrides": {"**/*.trino.sql": "trino"},
+        "overrides": {"**\\*.trino.sql": "trino"},
     }
-    (workspace / ".opencode" / "sql-lsp.json").write_text(
-        json.dumps(cfg, indent=2), encoding="utf-8"
+    (workspace_a / ".opencode" / "sql-lsp.json").write_text(
+        json.dumps(cfg_a, indent=2), encoding="utf-8"
     )
-    trino_file = workspace / "test.trino.sql"
-    starrocks_file = workspace / "test.sql"
+    trino_file = workspace_a / "test.trino.sql"
+    starrocks_file = workspace_a / "test.sql"
     trino_file.write_text("SELECT 1\n", encoding="utf-8")
     starrocks_file.write_text("SELECT 1\n", encoding="utf-8")
 
+    workspace_b = base / "ws-b"
+    workspace_b.mkdir(parents=True, exist_ok=True)
+    b_file = workspace_b / "missing_config.sql"
+    b_file.write_text("SELECT 1\n", encoding="utf-8")
+
+    workspace_c = base / "ws-c"
+    workspace_c.mkdir(parents=True, exist_ok=True)
+    (workspace_c / ".opencode").mkdir(exist_ok=True)
+    (workspace_c / ".opencode" / "sql-lsp.json").write_text(
+        "{ this is not valid json }\n", encoding="utf-8"
+    )
+    c_file = workspace_c / "bad_config.sql"
+    c_file.write_text("SELECT 1\n", encoding="utf-8")
+
     proc = subprocess.Popen(
-        ["opencode-sql-lsp", "--stdio", "--workspace", str(workspace)],
+        [
+            "opencode-sql-lsp",
+            "--stdio",
+            "--workspace",
+            str(workspace_a),
+        ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -81,7 +103,12 @@ def main() -> int:
             "method": "initialize",
             "params": {
                 "processId": None,
-                "rootUri": workspace.as_uri(),
+                "rootUri": workspace_a.as_uri(),
+                "workspaceFolders": [
+                    {"uri": workspace_a.as_uri(), "name": "ws-a"},
+                    {"uri": workspace_b.as_uri(), "name": "ws-b"},
+                    {"uri": workspace_c.as_uri(), "name": "ws-c"},
+                ],
                 "capabilities": {},
             },
         }
@@ -117,6 +144,8 @@ def main() -> int:
 
     did_open(trino_file)
     did_open(starrocks_file)
+    did_open(b_file)
+    did_open(c_file)
 
     req_id += 1
     fmt_req = RpcMessage(
@@ -153,6 +182,42 @@ def main() -> int:
     fmt_resp2 = read_until_response(stdout, req_id)
     assert fmt_resp2.get("id") == req_id, fmt_resp2
     assert isinstance(fmt_resp2.get("result"), list), fmt_resp2
+
+    req_id += 1
+    fmt_req3 = RpcMessage(
+        {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": {"uri": b_file.as_uri()},
+                "options": {"tabSize": 2, "insertSpaces": True},
+            },
+        }
+    )
+    stdin.write(fmt_req3.to_bytes())
+    stdin.flush()
+    fmt_resp3 = read_until_response(stdout, req_id)
+    assert fmt_resp3.get("id") == req_id, fmt_resp3
+    assert isinstance(fmt_resp3.get("result"), list), fmt_resp3
+
+    req_id += 1
+    fmt_req4 = RpcMessage(
+        {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": {"uri": c_file.as_uri()},
+                "options": {"tabSize": 2, "insertSpaces": True},
+            },
+        }
+    )
+    stdin.write(fmt_req4.to_bytes())
+    stdin.flush()
+    fmt_resp4 = read_until_response(stdout, req_id)
+    assert fmt_resp4.get("id") == req_id, fmt_resp4
+    assert isinstance(fmt_resp4.get("result"), list), fmt_resp4
 
     shutdown_id = req_id + 1
     shutdown = RpcMessage(
