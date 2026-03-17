@@ -3,6 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+try:
+    from sqlfluff.api.simple import fix, get_simple_config
+    from sqlfluff.core import Linter
+except Exception as e:
+    fix = None
+    get_simple_config = None
+    Linter = None
+    _sqlfluff_import_error = e
+else:
+    _sqlfluff_import_error = None
+
+
 @dataclass(frozen=True)
 class SqlIssue:
     message: str
@@ -11,11 +23,14 @@ class SqlIssue:
 
 
 def lint_issues(sql: str, dialect: str) -> list[SqlIssue]:
-    try:
-        from sqlfluff.api.simple import get_simple_config
-        from sqlfluff.core import Linter
-    except Exception as e:
-        return [SqlIssue(message=f"sqlfluff not available: {e}", line=1, character=0)]
+    if get_simple_config is None or Linter is None:
+        return [
+            SqlIssue(
+                message=f"sqlfluff not available: {_sqlfluff_import_error}",
+                line=1,
+                character=0,
+            )
+        ]
 
     try:
         config = get_simple_config(dialect=dialect)
@@ -46,9 +61,7 @@ def lint_issues(sql: str, dialect: str) -> list[SqlIssue]:
 
 
 def format_sql(sql: str, dialect: str) -> str:
-    try:
-        from sqlfluff.api.simple import fix
-    except Exception as e:
-        raise RuntimeError(f"sqlfluff not available: {e}")
+    if fix is None:
+        raise RuntimeError(f"sqlfluff not available: {_sqlfluff_import_error}")
 
     return fix(sql, dialect=dialect)

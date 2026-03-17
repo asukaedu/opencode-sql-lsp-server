@@ -4,13 +4,15 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO, cast
 
 
 @dataclass(frozen=True)
 class RpcMessage:
-    payload: dict
+    payload: dict[str, object]
 
     def to_bytes(self) -> bytes:
         body = json.dumps(self.payload, separators=(",", ":")).encode("utf-8")
@@ -18,7 +20,7 @@ class RpcMessage:
         return header + body
 
 
-def read_rpc(stream) -> dict:
+def read_rpc(stream: IO[bytes]) -> dict[str, object]:
     header_bytes = b""
     while b"\r\n\r\n" not in header_bytes:
         chunk = stream.read(1)
@@ -36,14 +38,33 @@ def read_rpc(stream) -> dict:
     body = stream.read(content_length)
     if len(body) != content_length:
         raise RuntimeError("EOF while reading body")
-    return json.loads(body.decode("utf-8"))
+    return cast(dict[str, object], json.loads(body.decode("utf-8")))
 
 
-def read_until_response(stream, request_id: int) -> dict:
+def read_until_response(stream: IO[bytes], request_id: int) -> dict[str, object]:
     while True:
         msg = read_rpc(stream)
         if msg.get("id") == request_id:
             return msg
+
+
+def format_request(
+    stdin: IO[bytes], stdout: IO[bytes], request_id: int, path: Path
+) -> dict[str, object]:
+    fmt_req = RpcMessage(
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": {"uri": path.as_uri()},
+                "options": {"tabSize": 2, "insertSpaces": True},
+            },
+        }
+    )
+    stdin.write(fmt_req.to_bytes())
+    stdin.flush()
+    return read_until_response(stdout, request_id)
 
 
 def main() -> int:
@@ -148,74 +169,38 @@ def main() -> int:
     did_open(c_file)
 
     req_id += 1
-    fmt_req = RpcMessage(
-        {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": "textDocument/formatting",
-            "params": {
-                "textDocument": {"uri": trino_file.as_uri()},
-                "options": {"tabSize": 2, "insertSpaces": True},
-            },
-        }
-    )
-    stdin.write(fmt_req.to_bytes())
-    stdin.flush()
-    fmt_resp = read_until_response(stdout, req_id)
+    fmt_resp = format_request(stdin, stdout, req_id, trino_file)
     assert fmt_resp.get("id") == req_id, fmt_resp
     assert isinstance(fmt_resp.get("result"), list), fmt_resp
 
+    first_repeat_start = time.perf_counter()
     req_id += 1
-    fmt_req2 = RpcMessage(
-        {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": "textDocument/formatting",
-            "params": {
-                "textDocument": {"uri": starrocks_file.as_uri()},
-                "options": {"tabSize": 2, "insertSpaces": True},
-            },
-        }
-    )
-    stdin.write(fmt_req2.to_bytes())
-    stdin.flush()
-    fmt_resp2 = read_until_response(stdout, req_id)
+    fmt_resp_repeat = format_request(stdin, stdout, req_id, trino_file)
+    first_repeat_duration = time.perf_counter() - first_repeat_start
+    assert fmt_resp_repeat.get("id") == req_id, fmt_resp_repeat
+    assert isinstance(fmt_resp_repeat.get("result"), list), fmt_resp_repeat
+    assert first_repeat_duration < 5, first_repeat_duration
+
+    second_repeat_start = time.perf_counter()
+    req_id += 1
+    fmt_resp_repeat_2 = format_request(stdin, stdout, req_id, trino_file)
+    second_repeat_duration = time.perf_counter() - second_repeat_start
+    assert fmt_resp_repeat_2.get("id") == req_id, fmt_resp_repeat_2
+    assert isinstance(fmt_resp_repeat_2.get("result"), list), fmt_resp_repeat_2
+    assert second_repeat_duration < 5, second_repeat_duration
+
+    req_id += 1
+    fmt_resp2 = format_request(stdin, stdout, req_id, starrocks_file)
     assert fmt_resp2.get("id") == req_id, fmt_resp2
     assert isinstance(fmt_resp2.get("result"), list), fmt_resp2
 
     req_id += 1
-    fmt_req3 = RpcMessage(
-        {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": "textDocument/formatting",
-            "params": {
-                "textDocument": {"uri": b_file.as_uri()},
-                "options": {"tabSize": 2, "insertSpaces": True},
-            },
-        }
-    )
-    stdin.write(fmt_req3.to_bytes())
-    stdin.flush()
-    fmt_resp3 = read_until_response(stdout, req_id)
+    fmt_resp3 = format_request(stdin, stdout, req_id, b_file)
     assert fmt_resp3.get("id") == req_id, fmt_resp3
     assert isinstance(fmt_resp3.get("result"), list), fmt_resp3
 
     req_id += 1
-    fmt_req4 = RpcMessage(
-        {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": "textDocument/formatting",
-            "params": {
-                "textDocument": {"uri": c_file.as_uri()},
-                "options": {"tabSize": 2, "insertSpaces": True},
-            },
-        }
-    )
-    stdin.write(fmt_req4.to_bytes())
-    stdin.flush()
-    fmt_resp4 = read_until_response(stdout, req_id)
+    fmt_resp4 = format_request(stdin, stdout, req_id, c_file)
     assert fmt_resp4.get("id") == req_id, fmt_resp4
     assert isinstance(fmt_resp4.get("result"), list), fmt_resp4
 
