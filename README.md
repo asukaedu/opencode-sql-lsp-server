@@ -64,6 +64,21 @@ Dialect keys are sqlfluff dialect labels, e.g.:
 
 - Diagnostics and formatting are powered by `sqlfluff`.
 - Dialect keys (sqlfluff): `trino`, `starrocks`.
+- The server also provides lightweight SQL keyword completion, hover help, code actions, and document/workspace symbols for agent-driven editing.
+
+## Optional performance controls
+
+You can tune large-file lint skipping per workspace:
+
+```json
+{
+  "defaultDialect": "starrocks",
+  "maxLintLines": 5000,
+  "maxLintBytes": 200000
+}
+```
+
+When a document exceeds either limit, linting is skipped and the server publishes a warning diagnostic instead.
 
 ## Verify dialects
 
