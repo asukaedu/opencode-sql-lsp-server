@@ -98,11 +98,66 @@ python3 -m pip install -e ".[dev]"
 Run the local verification gates before opening a PR:
 
 ```bash
-python3 -m pytest
-python3 tests/smoke_lsp_stdio.py
-python3 -m basedpyright src/opencode_sql_lsp_server
-bash scripts/build_dist.sh
+bash scripts/verify_fast.sh
+bash scripts/verify_full.sh
 ```
+
+### Verification ladder
+
+- Fast — default loop for small code changes:
+  - `bash scripts/verify_fast.sh`
+- Targeted — when only one area changed:
+  - Config/cache work: `python3 -m pytest tests/test_config.py tests/test_workspace_config.py -q`
+  - Server behavior work: `python3 -m pytest tests/test_server_behaviors.py tests/test_lsp_helpers.py -q`
+  - Diagnostics scheduling work: `python3 -m pytest tests/test_server_behaviors.py tests/test_diagnostics_scheduler.py -q`
+  - sqlfluff adapter work: `python3 -m pytest tests/test_sqlfluff_adapter.py -q`
+  - Docs/workflow consistency: `python3 -m pytest tests/test_docs_consistency.py -q`
+  - Smoke-only: `python3 -m pytest -m smoke -q`
+- Full — before handoff/PR:
+  - `bash scripts/verify_full.sh`
+
+### Marker-driven verification lanes
+
+- `@pytest.mark.config`
+  - Owns: `tests/test_config.py`, `tests/test_workspace_config.py`
+  - Use when changing `config.py` or `workspace_config.py`
+- `@pytest.mark.server`
+  - Owns: `tests/test_server_behaviors.py`, `tests/test_diagnostics_scheduler.py`
+  - Use when changing `server.py` or diagnostics scheduling behavior
+- `@pytest.mark.lsp_helpers`
+  - Owns: `tests/test_lsp_helpers.py`
+  - Use when changing `lsp_utils.py` or `symbol_provider.py`
+- `@pytest.mark.sqlfluff`
+  - Owns: `tests/test_sqlfluff_adapter.py`
+  - Use when changing `sqlfluff_adapter.py`
+- `@pytest.mark.docs`
+  - Owns: `tests/test_docs_consistency.py`
+  - Use when changing `README.md`, `src/opencode_sql_lsp_server/AGENTS.md`, verification scripts, or `.github/workflows/ci.yml`
+- `@pytest.mark.smoke`
+  - Owns: `tests/test_smoke_stdio.py`
+  - Use before handoff when transport or end-to-end behavior may be affected
+
+### Multi-agent handoff guide
+
+- Handler changes in `src/opencode_sql_lsp_server/server.py`
+  - Also inspect: `src/opencode_sql_lsp_server/lsp_utils.py`, `src/opencode_sql_lsp_server/symbol_provider.py`, `src/opencode_sql_lsp_server/diagnostics_scheduler.py`
+  - Do not change: CLI transport contract in `cli.py`
+  - Verify: `python3 -m pytest tests/test_server_behaviors.py tests/test_lsp_helpers.py tests/test_diagnostics_scheduler.py -q`
+- Dialect/config changes in `src/opencode_sql_lsp_server/config.py` or `src/opencode_sql_lsp_server/workspace_config.py`
+  - Also inspect: workspace-root precedence and cached config fallback behavior
+  - Do not change: default degraded fallback to `starrocks`
+  - Verify: `python3 -m pytest tests/test_config.py tests/test_workspace_config.py -q`
+- sqlfluff integration changes in `src/opencode_sql_lsp_server/sqlfluff_adapter.py`
+  - Do not import `sqlfluff` directly into `server.py`
+  - Verify: `python3 -m pytest tests/test_sqlfluff_adapter.py tests/test_server_behaviors.py -q`
+- Diagnostics scheduling changes in `src/opencode_sql_lsp_server/diagnostics_scheduler.py`
+  - Also inspect: cancellation/version behavior in `src/opencode_sql_lsp_server/server.py`
+  - Do not change: debounce semantics for didOpen/didChange/didSave
+  - Verify: `python3 -m pytest tests/test_server_behaviors.py tests/test_diagnostics_scheduler.py -q`
+- Release/build workflow changes in `scripts/` or `.github/workflows/`
+  - Verify: `python3 -m pytest tests/test_docs_consistency.py -q && bash scripts/build_dist.sh`
+
+Docs-only changes now take a lighter CI path: `.github/workflows/ci.yml` always runs `quick-validate`, but the full matrix job only runs when code-affecting files change. Docs-only changes still run `python -m pytest tests/test_docs_consistency.py -q` in CI.
 
 The GitHub Actions workflow in `.github/workflows/ci.yml` runs the same checks on Python 3.10, 3.11, and 3.12.
 

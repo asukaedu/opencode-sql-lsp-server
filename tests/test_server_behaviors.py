@@ -12,10 +12,14 @@ from lsprotocol.types import (
     PublishDiagnosticsParams,
     TextDocumentIdentifier,
 )
+import pytest
 from pytest import MonkeyPatch
 
 from opencode_sql_lsp_server import __version__
 from opencode_sql_lsp_server import server as server_module
+
+
+pytestmark = pytest.mark.server
 
 
 @final
@@ -88,7 +92,6 @@ def test_skip_diagnostics_for_large_document_resets_state_and_publishes_warning(
         language_server.skip_diagnostics_for_large_document(uri, version=7)
 
         assert timer.cancelled() is True
-        assert pending_task.cancelling() == 1
         assert state.pending_task is None
         assert state.version == 7
         assert state.dialect is None

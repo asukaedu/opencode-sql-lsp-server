@@ -48,6 +48,14 @@ opencode_sql_lsp_server = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+  "config: config loading, workspace-root resolution, and cache fallback coverage",
+  "server: LSP server handler and diagnostics scheduling coverage",
+  "lsp_helpers: document token and symbol helper coverage",
+  "sqlfluff: sqlfluff adapter lint/format integration coverage",
+  "docs: machine-checked docs and workflow consistency coverage",
+  "smoke: end-to-end stdio subprocess coverage",
+]
 
 [tool.basedpyright]
 include = ["src"]

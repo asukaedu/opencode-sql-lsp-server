@@ -8,6 +8,9 @@ import pytest
 from opencode_sql_lsp_server.config import SqlLspConfig, SqlLspConfigLoadError
 
 
+pytestmark = pytest.mark.config
+
+
 def test_load_returns_defaults_when_config_missing(tmp_path: Path) -> None:
     config = SqlLspConfig.load(tmp_path)
 

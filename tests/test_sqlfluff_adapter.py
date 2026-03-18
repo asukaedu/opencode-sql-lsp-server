@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from pytest import MonkeyPatch
 
 from opencode_sql_lsp_server import sqlfluff_adapter
+
+
+pytestmark = pytest.mark.sqlfluff
 
 
 def test_lint_issues_reports_missing_sqlfluff(monkeypatch: MonkeyPatch) -> None:

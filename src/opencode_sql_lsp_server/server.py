@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol, cast
+from typing import Final, cast
 
 from lsprotocol.types import (
     CodeAction,
@@ -52,7 +50,21 @@ from pygls.uris import to_fs_path
 from pygls.exceptions import PyglsError
 from . import __version__
 from .config import SqlLspConfig
+from .diagnostics_scheduler import DiagnosticsScheduler, DocDiagnosticsState
+from .lsp_utils import (
+    TextDocumentLike,
+    full_document_range,
+    issue_range,
+    word_at_position,
+)
 from .sqlfluff_adapter import SqlIssue, format_sql, lint_issues
+from .symbol_provider import statement_symbols
+from .workspace_config import (
+    ConfigCacheEntry,
+    best_root_for_uri,
+    config_cache_entry_for_root,
+    config_for_root,
+)
 
 
 _DID_CHANGE_DEBOUNCE_S = 0.25
@@ -84,41 +96,19 @@ _KEYWORD_COMPLETIONS: Final[list[CompletionItem]] = [
 ]
 
 
-class _TextDocumentLike(Protocol):
-    source: str
-    lines: Sequence[str]
-
-
-@dataclass
-class _ConfigCacheEntry:
-    mtime_ns: int | None
-    config: SqlLspConfig
-    last_error_mtime_ns: int | None = None
-
-
-@dataclass
-class _DocState:
-    version: int | None = None
-    pending_timer: asyncio.TimerHandle | None = None
-    pending_task: asyncio.Task[None] | None = None
-    dialect: str | None = None
-    dialect_root: Path | None = None
-    dialect_config_mtime_ns: int | None = None
-
-
 class OpenCodeSqlLanguageServer(LanguageServer):
     def __init__(self) -> None:
         super().__init__("opencode-sql-lsp", __version__, max_workers=2)
         self._workspace_roots: list[Path] = []
-        self._config_cache: dict[Path, _ConfigCacheEntry] = {}
-        self._doc_state: dict[str, _DocState] = {}
+        self._config_cache: dict[Path, ConfigCacheEntry] = {}
+        self._diagnostics_scheduler = DiagnosticsScheduler()
 
-    def document_state(self, uri: str) -> _DocState:
-        return self._doc_state.setdefault(uri, _DocState())
+    def document_state(self, uri: str) -> DocDiagnosticsState:
+        return self._diagnostics_scheduler.document_state(uri)
 
-    def get_text_document(self, uri: str) -> _TextDocumentLike:
+    def get_text_document(self, uri: str) -> TextDocumentLike:
         document = self.workspace.get_text_document(uri)
-        return cast(_TextDocumentLike, cast(object, document))
+        return cast(TextDocumentLike, cast(object, document))
 
     def set_workspace_root(self, root: str | None) -> None:
         self.set_workspace_roots([root] if root else [])
@@ -126,70 +116,24 @@ class OpenCodeSqlLanguageServer(LanguageServer):
     def set_workspace_roots(self, roots: list[str]) -> None:
         self._workspace_roots = [Path(r).resolve() for r in roots if r]
         self._config_cache.clear()
-        self._doc_state.clear()
+        self._diagnostics_scheduler.clear()
 
     def _best_root_for_uri(self, doc_uri: str) -> Path | None:
-        if not self._workspace_roots:
-            return None
-        try:
-            fs_path = to_fs_path(doc_uri)
-            if not fs_path:
-                return None
-            p = Path(fs_path).resolve()
-        except Exception:
-            return None
-
-        best: Path | None = None
-        best_len = -1
-        for r in self._workspace_roots:
-            try:
-                _ = p.relative_to(r)
-            except Exception:
-                continue
-            l = len(str(r))
-            if l > best_len:
-                best = r
-                best_len = l
-        return best
+        return best_root_for_uri(self._workspace_roots, doc_uri)
 
     def _config_for_root(self, root: Path) -> SqlLspConfig:
-        return self._config_cache_entry_for_root(root).config
+        return config_for_root(
+            root,
+            config_cache=self._config_cache,
+            report_server_error=self.report_server_error,
+        )
 
-    def _config_cache_entry_for_root(self, root: Path) -> _ConfigCacheEntry:
-        cfg_path = root / ".opencode" / "sql-lsp.json"
-        try:
-            st = cfg_path.stat()
-            mtime_ns: int | None = st.st_mtime_ns
-        except FileNotFoundError:
-            mtime_ns = None
-        except Exception as e:
-            self.report_server_error(e, PyglsError)
-            return _ConfigCacheEntry(mtime_ns=None, config=SqlLspConfig.default())
-
-        cached = self._config_cache.get(root)
-        if cached and cached.mtime_ns == mtime_ns:
-            return cached
-
-        if mtime_ns is None:
-            cfg = SqlLspConfig.default()
-            entry = _ConfigCacheEntry(mtime_ns=None, config=cfg)
-            self._config_cache[root] = entry
-            return entry
-
-        try:
-            cfg = SqlLspConfig.load(root)
-        except Exception as e:
-            if cached and cached.config:
-                if cached.last_error_mtime_ns != mtime_ns:
-                    cached.last_error_mtime_ns = mtime_ns
-                    self.report_server_error(e, PyglsError)
-                return cached
-            self.report_server_error(e, PyglsError)
-            cfg = SqlLspConfig.default()
-
-        entry = _ConfigCacheEntry(mtime_ns=mtime_ns, config=cfg)
-        self._config_cache[root] = entry
-        return entry
+    def _config_cache_entry_for_root(self, root: Path) -> ConfigCacheEntry:
+        return config_cache_entry_for_root(
+            root,
+            config_cache=self._config_cache,
+            report_server_error=self.report_server_error,
+        )
 
     def dialect_for_document(self, doc_uri: str) -> str:
         root = self._best_root_for_uri(doc_uri)
@@ -207,7 +151,7 @@ class OpenCodeSqlLanguageServer(LanguageServer):
             return cfg.default_dialect
 
     def cached_dialect_for_document(self, doc_uri: str) -> str:
-        state = self._doc_state.setdefault(doc_uri, _DocState())
+        state = self.document_state(doc_uri)
         root = self._best_root_for_uri(doc_uri)
         if not root:
             state.dialect = SqlLspConfig.default().default_dialect
@@ -263,17 +207,7 @@ class OpenCodeSqlLanguageServer(LanguageServer):
     def skip_diagnostics_for_large_document(
         self, uri: str, version: int | None
     ) -> None:
-        state = self.document_state(uri)
-        state.version = version
-        state.dialect = None
-        state.dialect_root = None
-        state.dialect_config_mtime_ns = None
-        if state.pending_timer is not None:
-            state.pending_timer.cancel()
-            state.pending_timer = None
-        if state.pending_task is not None and not state.pending_task.done():
-            _ = state.pending_task.cancel()
-        state.pending_task = None
+        _ = self._diagnostics_scheduler.reset(uri, version)
         self.publish_skipped_diagnostics(uri)
 
     def document_config(self, uri: str) -> SqlLspConfig:
@@ -324,7 +258,7 @@ class OpenCodeSqlLanguageServer(LanguageServer):
                 message = f"[{issue.code}] {message}"
             diagnostics.append(
                 Diagnostic(
-                    range=_issue_range(doc, issue),
+                    range=issue_range(doc, issue),
                     message=message,
                     severity=DiagnosticSeverity.Error,
                     source="sqlfluff",
@@ -342,32 +276,12 @@ class OpenCodeSqlLanguageServer(LanguageServer):
         *,
         debounce_s: float,
     ) -> None:
-        state = self.document_state(uri)
-        state.version = version
-        state.dialect = None
-        state.dialect_root = None
-        state.dialect_config_mtime_ns = None
-
-        if state.pending_timer is not None:
-            state.pending_timer.cancel()
-            state.pending_timer = None
-
-        if state.pending_task is not None and not state.pending_task.done():
-            _ = state.pending_task.cancel()
-        state.pending_task = None
-
-        loop = asyncio.get_running_loop()
-
-        def kickoff() -> None:
-            state.pending_timer = None
-            state.pending_task = asyncio.create_task(
-                self.run_lint_and_publish(uri, expected_version=version)
-            )
-
-        if debounce_s <= 0:
-            kickoff()
-        else:
-            state.pending_timer = loop.call_later(debounce_s, kickoff)
+        self._diagnostics_scheduler.schedule(
+            uri,
+            version,
+            debounce_s=debounce_s,
+            run_lint=self.run_lint_and_publish,
+        )
 
 
 server = OpenCodeSqlLanguageServer()
@@ -400,120 +314,6 @@ def initialize(ls: OpenCodeSqlLanguageServer, params: InitializeParams) -> None:
             seen.add(r)
             deduped.append(r)
     ls.set_workspace_roots(deduped)
-
-
-def _safe_position(doc: _TextDocumentLike, line_1: int, character: int) -> Position:
-    if not doc.lines:
-        return Position(line=0, character=0)
-    max_line = max(0, len(doc.lines) - 1)
-    line_idx = min(max(0, line_1 - 1), max_line)
-    line_text = doc.lines[line_idx]
-    char_idx = min(max(0, character), len(line_text))
-    return Position(line=line_idx, character=char_idx)
-
-
-def _issue_range(doc: _TextDocumentLike, issue: SqlIssue) -> Range:
-    start = _safe_position(doc, issue.line, issue.character)
-    end_char = start.character + 1
-    if doc.lines:
-        line_text = doc.lines[start.line]
-        end_char = min(end_char, len(line_text))
-    end = Position(line=start.line, character=end_char)
-    return Range(start=start, end=end)
-
-
-def _full_document_range(doc: _TextDocumentLike) -> Range:
-    last_line = max(0, len(doc.lines) - 1)
-    last_char = len(doc.lines[last_line]) if doc.lines else 0
-    return Range(
-        start=Position(line=0, character=0),
-        end=Position(line=last_line, character=last_char),
-    )
-
-
-def _word_range_at_position(doc: _TextDocumentLike, position: Position) -> Range | None:
-    if not doc.lines:
-        return None
-    if position.line < 0 or position.line >= len(doc.lines):
-        return None
-    line_text = doc.lines[position.line]
-    if not line_text:
-        return None
-
-    char = min(max(position.character, 0), len(line_text))
-    start = char
-    while start > 0 and (line_text[start - 1].isalnum() or line_text[start - 1] == "_"):
-        start -= 1
-
-    end = char
-    while end < len(line_text) and (line_text[end].isalnum() or line_text[end] == "_"):
-        end += 1
-
-    if start == end:
-        return None
-
-    return Range(
-        start=Position(line=position.line, character=start),
-        end=Position(line=position.line, character=end),
-    )
-
-
-def _word_at_position(
-    doc: _TextDocumentLike, position: Position
-) -> tuple[str, Range] | None:
-    word_range = _word_range_at_position(doc, position)
-    if word_range is None:
-        return None
-    line_text = doc.lines[position.line]
-    token = line_text[word_range.start.character : word_range.end.character].strip()
-    if not token:
-        return None
-    return token.upper(), word_range
-
-
-def _statement_symbols(doc: _TextDocumentLike) -> list[DocumentSymbol]:
-    symbols: list[DocumentSymbol] = []
-    for line_index, raw_line in enumerate(doc.lines):
-        line = raw_line.strip()
-        if not line:
-            continue
-        upper_line = line.upper()
-        for keyword, kind in (
-            ("SELECT", SymbolKind.Function),
-            ("WITH", SymbolKind.Namespace),
-            ("INSERT", SymbolKind.Method),
-            ("UPDATE", SymbolKind.Method),
-            ("DELETE", SymbolKind.Method),
-            ("CREATE TABLE", SymbolKind.Class),
-        ):
-            if upper_line.startswith(keyword):
-                symbol_range = Range(
-                    start=Position(line=line_index, character=0),
-                    end=Position(line=line_index, character=len(raw_line)),
-                )
-                symbols.append(
-                    DocumentSymbol(
-                        name=line[:80],
-                        kind=kind,
-                        range=symbol_range,
-                        selection_range=symbol_range,
-                        detail="SQL statement",
-                    )
-                )
-                break
-    if symbols:
-        return symbols
-
-    fallback_range = _full_document_range(doc)
-    return [
-        DocumentSymbol(
-            name="SQL Script",
-            kind=SymbolKind.File,
-            range=fallback_range,
-            selection_range=fallback_range,
-            detail="Entire document",
-        )
-    ]
 
 
 @server.feature(TEXT_DOCUMENT_DID_OPEN)
@@ -583,7 +383,7 @@ def formatting(
     except Exception as e:
         ls.report_formatting_failure(e)
         return []
-    edit_range = _full_document_range(doc)
+    edit_range = full_document_range(doc)
     return [TextEdit(range=edit_range, new_text=formatted)]
 
 
@@ -612,7 +412,7 @@ def hover(ls: OpenCodeSqlLanguageServer, params: HoverParams) -> Hover | None:
         ls.report_server_error(e, PyglsError)
         return None
 
-    token_info = _word_at_position(doc, params.position)
+    token_info = word_at_position(doc, params.position)
     if token_info is None:
         return None
 
@@ -657,7 +457,7 @@ def code_action(
             is_preferred=True,
             edit=WorkspaceEdit(
                 changes={
-                    uri: [TextEdit(range=_full_document_range(doc), new_text=formatted)]
+                    uri: [TextEdit(range=full_document_range(doc), new_text=formatted)]
                 }
             ),
         )
@@ -674,7 +474,7 @@ def document_symbol(
         ls.report_server_error(e, PyglsError)
         return []
 
-    return _statement_symbols(doc)
+    return statement_symbols(doc)
 
 
 @server.feature(WORKSPACE_SYMBOL)
@@ -688,7 +488,7 @@ def workspace_symbol(
             doc = ls.get_text_document(uri)
         except Exception:
             continue
-        for symbol in _statement_symbols(doc):
+        for symbol in statement_symbols(doc):
             if query and query not in symbol.name.upper():
                 continue
             matches.append(
