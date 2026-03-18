@@ -138,6 +138,25 @@ def diagnostic_messages(diagnostics: list[JsonObject]) -> list[str]:
     ]
 
 
+def diagnostics_for_uri(
+    notifications: list[JsonObject], uri: str
+) -> list[list[JsonObject]]:
+    batches: list[list[JsonObject]] = []
+    for notification in notifications:
+        if notification.get("method") != "textDocument/publishDiagnostics":
+            continue
+        params = notification.get("params")
+        if not isinstance(params, dict) or params.get("uri") != uri:
+            continue
+        diagnostics_raw = params.get("diagnostics")
+        if not isinstance(diagnostics_raw, list):
+            continue
+        batches.append(
+            [cast(JsonObject, d) for d in diagnostics_raw if isinstance(d, dict)]
+        )
+    return batches
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     venv_command = repo_root / ".venv" / "bin" / "opencode-sql-lsp"
@@ -164,9 +183,23 @@ def main() -> int:
     trino_file = workspace_a / "test.trino.sql"
     starrocks_file = workspace_a / "test.sql"
     invalid_file = workspace_a / "broken.sql"
+    lateral_unnest_file = workspace_a / "lateral_unnest.sql"
+    json_each_file = workspace_a / "json_each.sql"
+    invalid_lateral_unnest_file = workspace_a / "broken_lateral_unnest.sql"
     _ = trino_file.write_text("SELECT 1\n", encoding="utf-8")
     _ = starrocks_file.write_text("SELECT 1\n", encoding="utf-8")
     _ = invalid_file.write_text("SELECT * FROM", encoding="utf-8")
+    _ = lateral_unnest_file.write_text(
+        "SELECT *\nFROM t, LATERAL UNNEST(arr) AS u(x)\n", encoding="utf-8"
+    )
+    _ = json_each_file.write_text(
+        "SELECT *\nFROM t, LATERAL JSON_EACH(j) AS j(k, v)\n",
+        encoding="utf-8",
+    )
+    _ = invalid_lateral_unnest_file.write_text(
+        "SELECT *\nFROM t, LATERAL UNNEST(arr) AS u(x)\nWHERE\n",
+        encoding="utf-8",
+    )
 
     workspace_b = base / "ws-b"
     workspace_b.mkdir(parents=True, exist_ok=True)
@@ -261,6 +294,9 @@ def main() -> int:
     did_open(trino_file)
     did_open(starrocks_file)
     did_open(invalid_file)
+    did_open(lateral_unnest_file)
+    did_open(json_each_file)
+    did_open(invalid_lateral_unnest_file)
     did_open(b_file)
     did_open(c_file)
     did_open(large_file)
@@ -395,30 +431,22 @@ def main() -> int:
 
     skipped_message_seen = False
     invalid_diagnostic_messages: list[str] = []
-    for maybe_diag in notifications:
-        if maybe_diag.get("method") != "textDocument/publishDiagnostics":
-            continue
-        params = maybe_diag.get("params")
-        if not isinstance(params, dict):
-            continue
-        if params.get("uri") == invalid_file.as_uri():
-            diagnostics_raw = params.get("diagnostics")
-            if isinstance(diagnostics_raw, list):
-                diagnostics = [
-                    cast(JsonObject, d) for d in diagnostics_raw if isinstance(d, dict)
-                ]
-                invalid_diagnostic_messages.extend(diagnostic_messages(diagnostics))
-        if params.get("uri") != large_file.as_uri():
-            continue
-        diagnostics_raw = params.get("diagnostics")
-        if not isinstance(diagnostics_raw, list):
-            continue
-        diagnostics = [
-            cast(JsonObject, d) for d in diagnostics_raw if isinstance(d, dict)
-        ]
+    lateral_unnest_diagnostic_messages: list[str] = []
+    json_each_diagnostic_messages: list[str] = []
+    invalid_lateral_unnest_messages: list[str] = []
+    for diagnostics in diagnostics_for_uri(notifications, invalid_file.as_uri()):
+        invalid_diagnostic_messages.extend(diagnostic_messages(diagnostics))
+    for diagnostics in diagnostics_for_uri(notifications, lateral_unnest_file.as_uri()):
+        lateral_unnest_diagnostic_messages.extend(diagnostic_messages(diagnostics))
+    for diagnostics in diagnostics_for_uri(notifications, json_each_file.as_uri()):
+        json_each_diagnostic_messages.extend(diagnostic_messages(diagnostics))
+    for diagnostics in diagnostics_for_uri(
+        notifications, invalid_lateral_unnest_file.as_uri()
+    ):
+        invalid_lateral_unnest_messages.extend(diagnostic_messages(diagnostics))
+    for diagnostics in diagnostics_for_uri(notifications, large_file.as_uri()):
         if has_skip_diagnostic(diagnostics):
             skipped_message_seen = True
-        if skipped_message_seen:
             break
 
     for _ in range(12):
@@ -437,6 +465,29 @@ def main() -> int:
                     cast(JsonObject, d) for d in diagnostics_raw if isinstance(d, dict)
                 ]
                 invalid_diagnostic_messages.extend(diagnostic_messages(diagnostics))
+        if params.get("uri") == lateral_unnest_file.as_uri():
+            diagnostics_raw = params.get("diagnostics")
+            if isinstance(diagnostics_raw, list):
+                diagnostics = [
+                    cast(JsonObject, d) for d in diagnostics_raw if isinstance(d, dict)
+                ]
+                lateral_unnest_diagnostic_messages.extend(
+                    diagnostic_messages(diagnostics)
+                )
+        if params.get("uri") == json_each_file.as_uri():
+            diagnostics_raw = params.get("diagnostics")
+            if isinstance(diagnostics_raw, list):
+                diagnostics = [
+                    cast(JsonObject, d) for d in diagnostics_raw if isinstance(d, dict)
+                ]
+                json_each_diagnostic_messages.extend(diagnostic_messages(diagnostics))
+        if params.get("uri") == invalid_lateral_unnest_file.as_uri():
+            diagnostics_raw = params.get("diagnostics")
+            if isinstance(diagnostics_raw, list):
+                diagnostics = [
+                    cast(JsonObject, d) for d in diagnostics_raw if isinstance(d, dict)
+                ]
+                invalid_lateral_unnest_messages.extend(diagnostic_messages(diagnostics))
         if params.get("uri") != large_file.as_uri():
             continue
         diagnostics_raw = params.get("diagnostics")
@@ -454,6 +505,15 @@ def main() -> int:
     assert all(
         "<bound method" not in message for message in invalid_diagnostic_messages
     ), invalid_diagnostic_messages
+    assert all(
+        "[PRS]" not in message for message in lateral_unnest_diagnostic_messages
+    ), lateral_unnest_diagnostic_messages
+    assert all("[PRS]" not in message for message in json_each_diagnostic_messages), (
+        json_each_diagnostic_messages
+    )
+    assert any("[PRS]" in message for message in invalid_lateral_unnest_messages), (
+        invalid_lateral_unnest_messages
+    )
 
     shutdown_id = req_id + 1
     shutdown = RpcMessage(

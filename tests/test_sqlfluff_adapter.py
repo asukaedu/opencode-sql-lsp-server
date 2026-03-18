@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+from pytest import MonkeyPatch
+
+from opencode_sql_lsp_server import sqlfluff_adapter
+
+
+def test_lint_issues_reports_missing_sqlfluff(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(sqlfluff_adapter, "get_simple_config", None)
+    monkeypatch.setattr(sqlfluff_adapter, "Linter", None)
+    monkeypatch.setattr(
+        sqlfluff_adapter, "_sqlfluff_import_error", RuntimeError("sqlfluff boom")
+    )
+
+    issues = sqlfluff_adapter.lint_issues("SELECT 1", dialect="starrocks")
+
+    assert len(issues) == 1
+    assert issues[0].code is None
+    assert "sqlfluff not available" in issues[0].message
+
+
+def test_lint_issues_filters_starrocks_false_positives(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    sql = "SELECT *\nFROM t, LATERAL UNNEST(arr) AS u(x)\n"
+    span_start = sql.index("AS u(x)")
+    span_end = sql.index(")", span_start) + 1
+    spans: list[object] = [
+        type("SpanLike", (), {"start": span_start, "end": span_end})()
+    ]
+    prs_issue = sqlfluff_adapter.SqlIssue(
+        code="PRS", message="parse", line=2, character=33
+    )
+    sanitized_issues = [
+        sqlfluff_adapter.SqlIssue(
+            code="AL01", message="alias false positive", line=2, character=33
+        ),
+        sqlfluff_adapter.SqlIssue(
+            code="LT01",
+            message="Unexpected whitespace before start bracket",
+            line=2,
+            character=33,
+        ),
+        sqlfluff_adapter.SqlIssue(
+            code="RF02", message="real issue", line=1, character=0
+        ),
+    ]
+
+    def fake_lint_once(raw_sql: str, dialect: str) -> list[sqlfluff_adapter.SqlIssue]:
+        assert dialect == "starrocks"
+        if raw_sql == sql:
+            return [prs_issue]
+        return sanitized_issues
+
+    monkeypatch.setattr(
+        sqlfluff_adapter,
+        "_lint_once",
+        fake_lint_once,
+    )
+
+    def fake_find_spans(raw_sql: str) -> list[object]:
+        assert raw_sql == sql
+        return spans
+
+    monkeypatch.setattr(
+        sqlfluff_adapter, "_find_starrocks_alias_column_list_spans", fake_find_spans
+    )
+
+    issues = sqlfluff_adapter.lint_issues(sql, dialect="starrocks")
+
+    assert issues == [
+        sqlfluff_adapter.SqlIssue(
+            code="RF02", message="real issue", line=1, character=0
+        )
+    ]
+
+
+def test_format_sql_raises_when_sqlfluff_fix_unavailable(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sqlfluff_adapter, "fix", None)
+    monkeypatch.setattr(
+        sqlfluff_adapter, "_sqlfluff_import_error", RuntimeError("formatter missing")
+    )
+
+    try:
+        _ = sqlfluff_adapter.format_sql("SELECT 1", dialect="starrocks")
+    except RuntimeError as exc:
+        assert "sqlfluff not available" in str(exc)
+    else:
+        raise AssertionError("format_sql should fail when fix is unavailable")

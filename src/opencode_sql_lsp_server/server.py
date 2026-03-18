@@ -50,6 +50,7 @@ from pygls.lsp.server import LanguageServer
 from pygls.uris import to_fs_path
 
 from pygls.exceptions import PyglsError
+from . import __version__
 from .config import SqlLspConfig
 from .sqlfluff_adapter import SqlIssue, format_sql, lint_issues
 
@@ -107,7 +108,7 @@ class _DocState:
 
 class OpenCodeSqlLanguageServer(LanguageServer):
     def __init__(self) -> None:
-        super().__init__("opencode-sql-lsp", "0.1.2", max_workers=2)
+        super().__init__("opencode-sql-lsp", __version__, max_workers=2)
         self._workspace_roots: list[Path] = []
         self._config_cache: dict[Path, _ConfigCacheEntry] = {}
         self._doc_state: dict[str, _DocState] = {}
@@ -255,6 +256,9 @@ class OpenCodeSqlLanguageServer(LanguageServer):
                 ],
             )
         )
+
+    def report_formatting_failure(self, error: Exception) -> None:
+        self.report_server_error(error, PyglsError)
 
     def skip_diagnostics_for_large_document(
         self, uri: str, version: int | None
@@ -576,7 +580,8 @@ def formatting(
     dialect = ls.cached_dialect_for_document(uri)
     try:
         formatted = format_sql(doc.source, dialect=dialect)
-    except Exception:
+    except Exception as e:
+        ls.report_formatting_failure(e)
         return []
     edit_range = _full_document_range(doc)
     return [TextEdit(range=edit_range, new_text=formatted)]
@@ -640,7 +645,8 @@ def code_action(
     dialect = ls.cached_dialect_for_document(uri)
     try:
         formatted = format_sql(doc.source, dialect=dialect)
-    except Exception:
+    except Exception as e:
+        ls.report_formatting_failure(e)
         return []
 
     return [
