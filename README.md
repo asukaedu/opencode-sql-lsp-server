@@ -42,6 +42,30 @@ python3 -m pip install -e .
 }
 ```
 
+## VS Code wrapper extension
+
+This repository now also carries a minimal VS Code wrapper extension under:
+
+```text
+extensions/vscode-opencode-sql-lsp-wrapper/
+```
+
+The wrapper is a thin frontend only. It launches the existing Python server with:
+
+```bash
+opencode-sql-lsp --stdio
+```
+
+Build and package the wrapper locally with:
+
+```bash
+cd extensions/vscode-opencode-sql-lsp-wrapper
+npm install
+npm run verify
+```
+
+If `opencode-sql-lsp` is not on `PATH`, configure `opencodeSql.serverPath` in VS Code settings.
+
 ## Dialect config
 
 Create `.opencode/sql-lsp.json` in your project:
@@ -115,6 +139,8 @@ bash scripts/verify_full.sh
   - Smoke-only: `python3 -m pytest -m smoke -q`
 - Full — before handoff/PR:
   - `bash scripts/verify_full.sh`
+- VS Code wrapper — when changing `extensions/vscode-opencode-sql-lsp-wrapper/**`:
+  - `bash scripts/verify_vscode_wrapper.sh`
 
 ### Marker-driven verification lanes
 
@@ -156,6 +182,9 @@ bash scripts/verify_full.sh
   - Verify: `python3 -m pytest tests/test_server_behaviors.py tests/test_diagnostics_scheduler.py -q`
 - Release/build workflow changes in `scripts/` or `.github/workflows/`
   - Verify: `python3 -m pytest tests/test_docs_consistency.py -q && bash scripts/build_dist.sh`
+- VS Code wrapper changes in `extensions/vscode-opencode-sql-lsp-wrapper/`
+  - Do not change: `pyproject.toml` packaging boundaries or the `opencode-sql-lsp --stdio` server contract
+  - Verify: `bash scripts/verify_vscode_wrapper.sh && bash scripts/verify_fast.sh`
 
 Docs-only changes now take a lighter CI path: `.github/workflows/ci.yml` always runs `quick-validate`, but the full matrix job only runs when code-affecting files change. Docs-only changes still run `python -m pytest tests/test_docs_consistency.py -q` in CI.
 

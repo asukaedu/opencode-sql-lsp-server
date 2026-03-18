@@ -11,6 +11,7 @@ Python stdio SQL LSP server for OpenCode. Core stack: `pygls` + `lsprotocol` + `
 ```text
 ./
 ├── src/opencode_sql_lsp_server/   # actual package; all server behavior lives here
+├── extensions/vscode-opencode-sql-lsp-wrapper/ # isolated VS Code client wrapper
 ├── tests/                         # focused pytest coverage + stdio smoke test
 ├── scripts/                       # build + publish helpers
 ├── .github/workflows/             # CI validation pipeline
@@ -26,6 +27,7 @@ Python stdio SQL LSP server for OpenCode. Core stack: `pygls` + `lsprotocol` + `
 | Dialect config loading | `src/opencode_sql_lsp_server/config.py` | reads `.opencode/sql-lsp.json` |
 | sqlfluff bridge | `src/opencode_sql_lsp_server/sqlfluff_adapter.py` | lint + format wrappers |
 | Packaging/install | `pyproject.toml` | src-layout package, console script |
+| VS Code wrapper | `extensions/vscode-opencode-sql-lsp-wrapper/` | separate Node/TypeScript client wrapper for `opencode-sql-lsp --stdio` |
 | Focused regression tests | `tests/test_*.py` | config, adapter, and server behavior coverage |
 | End-to-end behavior | `tests/smoke_lsp_stdio.py` | stdio RPC smoke coverage across multiple workspaces |
 | CI workflow | `.github/workflows/ci.yml` | pytest, smoke, basedpyright, packaging matrix |
@@ -48,6 +50,7 @@ Python stdio SQL LSP server for OpenCode. Core stack: `pygls` + `lsprotocol` + `
 - Python uses src-layout: imports come from `src/opencode_sql_lsp_server`, not repo root.
 - Console entrypoint is declared in `pyproject.toml` as `opencode-sql-lsp = "opencode_sql_lsp_server.cli:main"`.
 - Only stdio transport is supported; `cli.py` exits if `--stdio` is omitted.
+- The VS Code wrapper stays outside Python packaging and launches the same `opencode-sql-lsp --stdio` contract from `extensions/vscode-opencode-sql-lsp-wrapper/`.
 - Workspace-specific dialect rules come from `.opencode/sql-lsp.json`; missing config falls back to `starrocks`.
 - Server code prefers graceful degradation over hard crashes: config-load failures reuse cached config when possible; missing `sqlfluff` becomes surfaced diagnostics/runtime errors instead of import-time failure.
 - Large files skip linting based on `_MAX_LINT_LINES` / `_MAX_LINT_BYTES` in `server.py`.
@@ -55,6 +58,7 @@ Python stdio SQL LSP server for OpenCode. Core stack: `pygls` + `lsprotocol` + `
 
 ## ANTI-PATTERNS (THIS PROJECT)
 - Do not add alternate transports without updating the CLI contract; current interface is explicitly stdio-only.
+- Do not fold Node/VS Code wrapper files into `pyproject.toml` packaging; keep them isolated under `extensions/`.
 - Do not bypass `SqlLspConfig`; dialect resolution is centralized there and consumed through `dialect_for_document()`.
 - Do not call `sqlfluff` directly from new handlers; keep integration inside `sqlfluff_adapter.py`.
 - Do not assume one workspace root; initialization collects multiple folders and picks the best matching root per document.
@@ -83,6 +87,9 @@ python3 tests/smoke_lsp_stdio.py
 # type check
 python3 -m basedpyright src/opencode_sql_lsp_server
 
+# verify VS Code wrapper
+bash scripts/verify_vscode_wrapper.sh
+
 # build distribution
 scripts/build_dist.sh
 
@@ -96,5 +103,6 @@ sqlfluff dialects
 ## NOTES
 - `scripts/build_dist.sh` reuses the current interpreter by default, installs `build` + `twine`, runs `python -m build`, then `twine check dist/*`.
 - `scripts/publish_pypi.sh` expects an existing `dist/` directory and supports non-interactive PyPI uploads via `TWINE_USERNAME` / `TWINE_PASSWORD`.
+- `extensions/vscode-opencode-sql-lsp-wrapper/` has its own npm-based build/package flow and must not write artifacts to repo-root `dist/` or `build/`.
 - No existing repo-specific guardrail docs were found; this file is the primary maintainer guidance layer.
 - Child guidance lives in `src/opencode_sql_lsp_server/AGENTS.md`.

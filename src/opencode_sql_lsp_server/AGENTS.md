@@ -32,6 +32,7 @@ opencode_sql_lsp_server/
 
 ## CONVENTIONS
 - Keep LSP feature registration in `server.py`; current handlers are initialize, didOpen, didChange, didSave, formatting, completion, hover, codeAction, documentSymbol, and workspaceSymbol.
+- Keep the VS Code wrapper under `extensions/vscode-opencode-sql-lsp-wrapper/`; do not mix Node wrapper concerns into the Python package.
 - Route document dialect lookup through `OpenCodeSqlLanguageServer.dialect_for_document()` so multi-root workspace behavior stays consistent.
 - Preserve cache behavior in `workspace_config.py`: missing config returns defaults; invalid config reports once per mtime and can reuse cached config.
 - Diagnostics are async/debounced. Reuse `DiagnosticsScheduler` and `run_lint_and_publish()` instead of spawning ad hoc background work.
@@ -59,6 +60,10 @@ opencode_sql_lsp_server/
   - Touch points: `scripts/build_dist.sh`, `scripts/publish_pypi.sh`, `.github/workflows/ci.yml`
   - Do not touch: package entrypoint in `pyproject.toml`
   - Targeted verification: `bash scripts/build_dist.sh`
+- Change the VS Code wrapper
+  - Touch points: `extensions/vscode-opencode-sql-lsp-wrapper/`, `README.md`, `.github/workflows/ci.yml`
+  - Do not touch: the Python server transport contract in `cli.py`
+  - Targeted verification: `bash scripts/verify_vscode_wrapper.sh && python3 -m pytest tests/test_docs_consistency.py -q`
 
 ## ANTI-PATTERNS
 - Do not import `sqlfluff` in `server.py`; keep vendor interaction in `sqlfluff_adapter.py`.
@@ -74,6 +79,7 @@ opencode_sql_lsp_server/
 - Default dialect is `starrocks`; overrides use glob-style path matching with normalized `/` separators.
 - The package version is exported from `__init__.py` and consumed by `OpenCodeSqlLanguageServer`.
 - Docs/workflow consistency is machine-checked by `tests/test_docs_consistency.py`.
+- The VS Code wrapper must keep its build artifacts inside `extensions/vscode-opencode-sql-lsp-wrapper/` and continue launching `opencode-sql-lsp --stdio`.
 
 ## VERIFICATION
 - Unit tests live under `tests/test_*.py`; `tests/smoke_lsp_stdio.py` remains the end-to-end subprocess stdio check.
@@ -85,6 +91,7 @@ opencode_sql_lsp_server/
   - `python3 -m pytest tests/test_docs_consistency.py -q`
   - `python3 -m pytest -m smoke -q`
 - Full: `bash scripts/verify_full.sh`
+- VS Code wrapper: `bash scripts/verify_vscode_wrapper.sh`
 
 ## MARKER OWNERSHIP
 - `config` → `tests/test_config.py`, `tests/test_workspace_config.py`
