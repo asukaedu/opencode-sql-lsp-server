@@ -26,6 +26,7 @@ jobs:
               - '**/*.md'
             code_changed:
               - '.github/workflows/**'
+              - 'extensions/**'
               - 'pyproject.toml'
               - 'scripts/**'
               - 'src/**'
@@ -86,6 +87,23 @@ jobs:
 
       - name: Build distribution
         run: bash scripts/build_dist.sh
+
+  vscode-wrapper-validate:
+    needs: changes
+    if: ${{ needs.changes.outputs.code_changed == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify VS Code wrapper
+        run: bash scripts/verify_vscode_wrapper.sh
 
   docs-validate:
     needs: changes

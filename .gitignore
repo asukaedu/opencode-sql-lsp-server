@@ -4,6 +4,9 @@ __pycache__/
 
 .venv/
 venv/
+extensions/**/node_modules/
+extensions/**/out/
+extensions/**/dist/
 
 dist/
 build/
