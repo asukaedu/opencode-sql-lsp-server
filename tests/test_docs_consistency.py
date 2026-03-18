@@ -13,6 +13,7 @@ PACKAGE_AGENTS = ROOT / "src" / "opencode_sql_lsp_server" / "AGENTS.md"
 PYPROJECT = ROOT / "pyproject.toml"
 VERIFY_FAST = ROOT / "scripts" / "verify_fast.sh"
 VERIFY_FULL = ROOT / "scripts" / "verify_full.sh"
+VERIFY_VSCODE_WRAPPER = ROOT / "scripts" / "verify_vscode_wrapper.sh"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
@@ -25,6 +26,7 @@ def test_verification_ladder_commands_match_docs_and_scripts() -> None:
     package_agents = _read(PACKAGE_AGENTS)
     verify_fast = _read(VERIFY_FAST)
     verify_full = _read(VERIFY_FULL)
+    verify_vscode_wrapper = _read(VERIFY_VSCODE_WRAPPER)
 
     readme_commands = [
         "bash scripts/verify_fast.sh",
@@ -33,6 +35,7 @@ def test_verification_ladder_commands_match_docs_and_scripts() -> None:
         "python3 -m pytest tests/test_server_behaviors.py tests/test_lsp_helpers.py -q",
         "python3 -m pytest tests/test_sqlfluff_adapter.py -q",
         "python3 -m pytest -m smoke -q",
+        "bash scripts/verify_vscode_wrapper.sh",
     ]
     package_agent_commands = [
         "bash scripts/verify_fast.sh",
@@ -51,6 +54,7 @@ def test_verification_ladder_commands_match_docs_and_scripts() -> None:
     assert "tests/test_docs_consistency.py" in verify_fast
     assert 'python -m pytest -m "not smoke"' not in verify_full
     assert '"$PYTHON_BIN" -m pytest -m smoke -q' in verify_full
+    assert "npm run verify" in verify_vscode_wrapper
 
 
 def test_marker_definitions_cover_documented_verification_lanes() -> None:
@@ -98,4 +102,6 @@ def test_ci_runs_docs_lane_and_uses_path_filtering() -> None:
 
     assert "dorny/paths-filter@v3" in ci_workflow
     assert "docs_only" in ci_workflow
+    assert "extensions/**" in ci_workflow
     assert "Run docs consistency checks" in ci_workflow
+    assert "Verify VS Code wrapper" in ci_workflow
