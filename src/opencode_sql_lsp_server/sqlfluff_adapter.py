@@ -17,15 +17,37 @@ else:
 
 @dataclass(frozen=True)
 class SqlIssue:
+    code: str | None
     message: str
     line: int
     character: int
+
+
+def _violation_code(violation: object) -> str | None:
+    rule_code = getattr(violation, "rule_code", None)
+    if callable(rule_code):
+        resolved = rule_code()
+        return resolved if isinstance(resolved, str) and resolved else None
+    return rule_code if isinstance(rule_code, str) and rule_code else None
+
+
+def _violation_message(violation: object) -> str:
+    for attribute in ("desc", "description"):
+        candidate = getattr(violation, attribute, None)
+        if callable(candidate):
+            resolved = candidate()
+            if isinstance(resolved, str) and resolved:
+                return resolved
+        elif isinstance(candidate, str) and candidate:
+            return candidate
+    return str(violation)
 
 
 def lint_issues(sql: str, dialect: str) -> list[SqlIssue]:
     if get_simple_config is None or Linter is None:
         return [
             SqlIssue(
+                code=None,
                 message=f"sqlfluff not available: {_sqlfluff_import_error}",
                 line=1,
                 character=0,
@@ -44,20 +66,24 @@ def lint_issues(sql: str, dialect: str) -> list[SqlIssue]:
             if isinstance(line_no, int) and isinstance(line_pos, int):
                 issues.append(
                     SqlIssue(
-                        message=str(
-                            getattr(v, "desc", None)
-                            or getattr(v, "description", None)
-                            or v
-                        ),
+                        code=_violation_code(v),
+                        message=_violation_message(v),
                         line=max(1, line_no),
                         character=max(0, line_pos - 1),
                     )
                 )
             else:
-                issues.append(SqlIssue(message=str(v), line=1, character=0))
+                issues.append(
+                    SqlIssue(
+                        code=_violation_code(v),
+                        message=_violation_message(v),
+                        line=1,
+                        character=0,
+                    )
+                )
         return issues
     except Exception as e:
-        return [SqlIssue(message=str(e), line=1, character=0)]
+        return [SqlIssue(code=None, message=str(e), line=1, character=0)]
 
 
 def format_sql(sql: str, dialect: str) -> str:
