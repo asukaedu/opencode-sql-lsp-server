@@ -34,6 +34,7 @@ class SqlLspConfig:
     overrides: dict[str, str]
     max_lint_lines: int
     max_lint_bytes: int
+    excluded_rules: tuple[str, ...]
 
     @staticmethod
     def default() -> "SqlLspConfig":
@@ -42,6 +43,7 @@ class SqlLspConfig:
             overrides={},
             max_lint_lines=5_000,
             max_lint_bytes=200_000,
+            excluded_rules=("LT05", "ST06"),
         )
 
     @staticmethod
@@ -78,12 +80,19 @@ class SqlLspConfig:
         max_lint_bytes = _positive_int(
             data.get("maxLintBytes"), default_config.max_lint_bytes
         )
+        excluded_rules_raw = data.get("excludedRules")
+        excluded_rules: list[str] = []
+        if isinstance(excluded_rules_raw, list):
+            for value in excluded_rules_raw:
+                if isinstance(value, str) and value.strip():
+                    excluded_rules.append(value.strip().upper())
 
         return SqlLspConfig(
             default_dialect=default_dialect,
             overrides=overrides,
             max_lint_lines=max_lint_lines,
             max_lint_bytes=max_lint_bytes,
+            excluded_rules=tuple(excluded_rules) or default_config.excluded_rules,
         )
 
     def dialect_for_path(self, relative_path: str) -> str:

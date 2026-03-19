@@ -28,7 +28,6 @@ from lsprotocol.types import (
     MarkupKind,
     PublishDiagnosticsParams,
     SymbolInformation,
-    SymbolKind,
     TEXT_DOCUMENT_CODE_ACTION,
     TEXT_DOCUMENT_COMPLETION,
     TEXT_DOCUMENT_DID_CHANGE,
@@ -57,7 +56,7 @@ from .lsp_utils import (
     issue_range,
     word_at_position,
 )
-from .sqlfluff_adapter import SqlIssue, format_sql, lint_issues
+from .sqlfluff_adapter import format_sql, lint_issues
 from .symbol_provider import statement_symbols
 from .workspace_config import (
     ConfigCacheEntry,
@@ -236,11 +235,17 @@ class OpenCodeSqlLanguageServer(LanguageServer):
 
         source = doc.source
         dialect = self.cached_dialect_for_document(uri)
+        config = self.document_config(uri)
         loop = asyncio.get_running_loop()
 
         try:
             issues = await loop.run_in_executor(
-                self.thread_pool, lambda: lint_issues(source, dialect=dialect)
+                self.thread_pool,
+                lambda: lint_issues(
+                    source,
+                    dialect=dialect,
+                    excluded_rules=config.excluded_rules,
+                ),
             )
         except asyncio.CancelledError:
             return

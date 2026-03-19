@@ -148,6 +148,47 @@ def test_formatting_reports_failure_and_returns_empty_edits(
     assert reported == ["format boom"]
 
 
+def test_run_lint_and_publish_uses_configured_excluded_rules(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    document = FakeDocument("SELECT 1\n")
+    published: list[PublishDiagnosticsParams] = []
+
+    def get_document(uri: str) -> FakeDocument:
+        assert uri == "file:///tmp/query.sql"
+        return document
+
+    def get_dialect(uri: str) -> str:
+        assert uri == "file:///tmp/query.sql"
+        return "starrocks"
+
+    def get_config(uri: str) -> object:
+        assert uri == "file:///tmp/query.sql"
+        return type("ConfigLike", (), {"excluded_rules": ("LT05", "ST06")})()
+
+    def fake_lint(
+        sql: str, *, dialect: str, excluded_rules: tuple[str, ...]
+    ) -> list[object]:
+        assert sql == "SELECT 1\n"
+        assert dialect == "starrocks"
+        assert excluded_rules == ("LT05", "ST06")
+        return []
+
+    monkeypatch.setattr(language_server, "get_text_document", get_document)
+    monkeypatch.setattr(language_server, "cached_dialect_for_document", get_dialect)
+    monkeypatch.setattr(language_server, "document_config", get_config)
+    monkeypatch.setattr(
+        language_server, "text_document_publish_diagnostics", published.append
+    )
+    monkeypatch.setattr(server_module, "lint_issues", fake_lint)
+
+    asyncio.run(language_server.run_lint_and_publish("file:///tmp/query.sql", None))
+
+    assert len(published) == 1
+    assert published[0].diagnostics == []
+
+
 def test_code_action_reports_failure_and_returns_no_actions(
     monkeypatch: MonkeyPatch,
 ) -> None:

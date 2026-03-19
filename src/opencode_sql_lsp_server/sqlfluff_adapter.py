@@ -190,6 +190,24 @@ def _find_matching_paren(sql: str, open_index: int) -> int | None:
     return None
 
 
+def _find_clause_start(masked: str, start: int) -> int:
+    cursor = start
+    while cursor > 0 and masked[cursor - 1].isspace():
+        cursor -= 1
+    for keyword in ("LATERAL", "CROSS JOIN"):
+        keyword_len = len(keyword)
+        clause_start = cursor - keyword_len
+        if clause_start < 0:
+            continue
+        if masked[clause_start:cursor].casefold() == keyword.casefold():
+            if clause_start > 0 and (
+                masked[clause_start - 1].isalnum() or masked[clause_start - 1] == "_"
+            ):
+                continue
+            return clause_start
+    return start
+
+
 def _find_identifier_end(sql: str, start: int) -> int | None:
     if start >= len(sql):
         return None
@@ -207,11 +225,27 @@ def _find_starrocks_alias_column_list_spans(sql: str) -> list[_Span]:
     spans: list[_Span] = []
     index = 0
     while index < len(masked):
+        relation_start: int | None = None
+        cursor = index
         lateral_end = _match_keyword(masked, index, "LATERAL")
-        if lateral_end is None:
+        if lateral_end is not None:
+            relation_start = index
+            cursor = _skip_whitespace(masked, lateral_end)
+        else:
+            cross_end = _match_keyword(masked, index, "CROSS")
+            if cross_end is None:
+                index += 1
+                continue
+            cursor = _skip_whitespace(masked, cross_end)
+            join_end = _match_keyword(masked, cursor, "JOIN")
+            if join_end is None:
+                index += 1
+                continue
+            relation_start = index
+            cursor = _skip_whitespace(masked, join_end)
+        if relation_start is None:
             index += 1
             continue
-        cursor = _skip_whitespace(masked, lateral_end)
         function_end: int | None = None
         for function_name in _STARROCKS_TABLE_FUNCTIONS:
             function_end = _match_keyword(masked, cursor, function_name)
@@ -229,25 +263,25 @@ def _find_starrocks_alias_column_list_spans(sql: str) -> list[_Span]:
             index += 1
             continue
         cursor = _skip_whitespace(masked, function_close + 1)
-        as_start = cursor
+        span_start = _find_clause_start(masked, relation_start)
         as_end = _match_keyword(masked, cursor, "AS")
-        if as_end is None:
-            index += 1
-            continue
-        cursor = _skip_whitespace(masked, as_end)
+        if as_end is not None:
+            cursor = _skip_whitespace(masked, as_end)
         alias_end = _find_identifier_end(masked, cursor)
         if alias_end is None:
-            index += 1
+            spans.append(_Span(start=span_start, end=function_close + 1))
+            index = function_close + 1
             continue
         cursor = _skip_whitespace(masked, alias_end)
         if cursor >= len(masked) or masked[cursor] != "(":
-            index += 1
+            spans.append(_Span(start=span_start, end=alias_end))
+            index = alias_end
             continue
         alias_close = _find_matching_paren(masked, cursor)
         if alias_close is None:
             index += 1
             continue
-        spans.append(_Span(start=as_start, end=alias_close + 1))
+        spans.append(_Span(start=span_start, end=alias_close + 1))
         index = alias_close + 1
     return spans
 
@@ -333,18 +367,43 @@ def _filter_sanitized_starrocks_issues(
     return filtered
 
 
-def lint_issues(sql: str, dialect: str) -> list[SqlIssue]:
+def _filter_excluded_rules(
+    issues: list[SqlIssue], excluded_rules: frozenset[str]
+) -> list[SqlIssue]:
+    if not excluded_rules:
+        return issues
+    return [issue for issue in issues if issue.code not in excluded_rules]
+
+
+def _normalize_formatted_sql(sql: str) -> str:
+    if not sql:
+        return sql
+    normalized = sql.rstrip("\r\n")
+    if not normalized:
+        return "\n"
+    return f"{normalized}\n"
+
+
+def lint_issues(
+    sql: str, dialect: str, *, excluded_rules: tuple[str, ...] = ()
+) -> list[SqlIssue]:
+    excluded = frozenset(
+        rule.strip().upper() for rule in excluded_rules if rule.strip()
+    )
     try:
         issues = _lint_once(sql, dialect)
         if dialect.casefold() != "starrocks" or not _has_prs_issue(issues):
-            return issues
+            return _filter_excluded_rules(issues, excluded)
         spans = _find_starrocks_alias_column_list_spans(sql)
         if not spans or not _prs_issue_targets_span(sql, issues, spans):
-            return issues
+            return _filter_excluded_rules(issues, excluded)
         sanitized_issues = _lint_once(_sanitize_sql(sql, spans), dialect)
         if _has_prs_issue(sanitized_issues):
-            return issues
-        return _filter_sanitized_starrocks_issues(sql, sanitized_issues, spans)
+            return _filter_excluded_rules(issues, excluded)
+        return _filter_excluded_rules(
+            _filter_sanitized_starrocks_issues(sql, sanitized_issues, spans),
+            excluded,
+        )
     except Exception as e:
         return [SqlIssue(code=None, message=str(e), line=1, character=0)]
 
@@ -353,4 +412,4 @@ def format_sql(sql: str, dialect: str) -> str:
     if fix is None:
         raise RuntimeError(f"sqlfluff not available: {_sqlfluff_import_error}")
 
-    return fix(sql, dialect=dialect)
+    return _normalize_formatted_sql(fix(sql, dialect=dialect))

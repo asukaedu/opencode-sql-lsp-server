@@ -79,6 +79,61 @@ def test_lint_issues_filters_starrocks_false_positives(
     ]
 
 
+def test_lint_issues_filters_excluded_rules(monkeypatch: MonkeyPatch) -> None:
+    def fake_lint_once(raw_sql: str, dialect: str) -> list[sqlfluff_adapter.SqlIssue]:
+        assert raw_sql == "SELECT 1"
+        assert dialect == "starrocks"
+        return [
+            sqlfluff_adapter.SqlIssue(
+                code="LT05", message="line too long", line=1, character=0
+            ),
+            sqlfluff_adapter.SqlIssue(
+                code="ST06", message="select order", line=1, character=1
+            ),
+            sqlfluff_adapter.SqlIssue(
+                code="RF02", message="keep me", line=1, character=2
+            ),
+        ]
+
+    monkeypatch.setattr(sqlfluff_adapter, "_lint_once", fake_lint_once)
+
+    issues = sqlfluff_adapter.lint_issues(
+        "SELECT 1", dialect="starrocks", excluded_rules=("lt05", "ST06")
+    )
+
+    assert issues == [
+        sqlfluff_adapter.SqlIssue(code="RF02", message="keep me", line=1, character=2)
+    ]
+
+
+def test_lint_issues_sanitizes_cross_join_table_function_patterns(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    sql = "SELECT *\nFROM t\nCROSS JOIN UNNEST(arr) AS u(x)\n"
+    prs_issue = sqlfluff_adapter.SqlIssue(
+        code="PRS", message="parse", line=3, character=11
+    )
+    sanitized_issues = [
+        sqlfluff_adapter.SqlIssue(
+            code="RF02", message="real issue", line=1, character=0
+        )
+    ]
+
+    def fake_lint_once(raw_sql: str, dialect: str) -> list[sqlfluff_adapter.SqlIssue]:
+        assert dialect == "starrocks"
+        if raw_sql == sql:
+            return [prs_issue]
+        assert "CROSS JOIN" not in raw_sql
+        assert "UNNEST" not in raw_sql
+        return sanitized_issues
+
+    monkeypatch.setattr(sqlfluff_adapter, "_lint_once", fake_lint_once)
+
+    issues = sqlfluff_adapter.lint_issues(sql, dialect="starrocks")
+
+    assert issues == sanitized_issues
+
+
 def test_format_sql_raises_when_sqlfluff_fix_unavailable(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -93,3 +148,16 @@ def test_format_sql_raises_when_sqlfluff_fix_unavailable(
         assert "sqlfluff not available" in str(exc)
     else:
         raise AssertionError("format_sql should fail when fix is unavailable")
+
+
+def test_format_sql_normalizes_trailing_blank_lines(monkeypatch: MonkeyPatch) -> None:
+    def fake_fix(sql: str, *, dialect: str) -> str:
+        assert sql == "SELECT 1\n"
+        assert dialect == "starrocks"
+        return "SELECT 1\n\n\n"
+
+    monkeypatch.setattr(sqlfluff_adapter, "fix", fake_fix)
+
+    formatted = sqlfluff_adapter.format_sql("SELECT 1\n", dialect="starrocks")
+
+    assert formatted == "SELECT 1\n"

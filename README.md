@@ -73,6 +73,7 @@ Create `.opencode/sql-lsp.json` in your project:
 ```json
 {
   "defaultDialect": "starrocks",
+  "excludedRules": ["LT05", "ST06"],
   "overrides": {
     "trino/**/*.sql": "trino"
   }
@@ -88,6 +89,7 @@ Dialect keys are sqlfluff dialect labels, e.g.:
 
 - Diagnostics and formatting are powered by `sqlfluff`.
 - Dialect keys (sqlfluff): `trino`, `starrocks`.
+- By default, style-only sqlfluff rules `LT05` (long lines) and `ST06` (select target ordering) are excluded to avoid noisy diagnostics for practical StarRocks queries. Override with `.opencode/sql-lsp.json` if you want a different policy.
 - The server also provides lightweight SQL keyword completion, hover help, code actions, and document/workspace symbols for agent-driven editing.
 - Formatting and code-action failures degrade safely to empty results and are reported through the server error channel.
 

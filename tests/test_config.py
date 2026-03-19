@@ -40,6 +40,7 @@ def test_load_applies_overrides_and_positive_limits(tmp_path: Path) -> None:
                 },
                 "maxLintLines": 10,
                 "maxLintBytes": 2048,
+                "excludedRules": ["lt05", "ST06", "", 42],
             }
         ),
         encoding="utf-8",
@@ -52,6 +53,7 @@ def test_load_applies_overrides_and_positive_limits(tmp_path: Path) -> None:
     assert config.dialect_for_path("other/example.sql") == "trino"
     assert config.max_lint_lines == 10
     assert config.max_lint_bytes == 2048
+    assert config.excluded_rules == ("LT05", "ST06")
 
 
 def test_load_falls_back_for_blank_dialect_and_non_positive_limits(
@@ -76,3 +78,4 @@ def test_load_falls_back_for_blank_dialect_and_non_positive_limits(
     assert config.default_dialect == defaults.default_dialect
     assert config.max_lint_lines == defaults.max_lint_lines
     assert config.max_lint_bytes == defaults.max_lint_bytes
+    assert config.excluded_rules == defaults.excluded_rules
