@@ -134,6 +134,17 @@ def test_lint_issues_sanitizes_cross_join_table_function_patterns(
     assert issues == sanitized_issues
 
 
+def test_lint_issues_sanitizes_live_lateral_unnest_parse_issue() -> None:
+    if sqlfluff_adapter.get_simple_config is None or sqlfluff_adapter.Linter is None:
+        pytest.skip("sqlfluff not installed")
+
+    sql = "SELECT *\nFROM t, LATERAL UNNEST(arr) AS u(x)\n"
+
+    issues = sqlfluff_adapter.lint_issues(sql, dialect="starrocks")
+
+    assert all(issue.code != "PRS" for issue in issues), issues
+
+
 def test_format_sql_raises_when_sqlfluff_fix_unavailable(
     monkeypatch: MonkeyPatch,
 ) -> None:

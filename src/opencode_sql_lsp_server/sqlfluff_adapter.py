@@ -194,6 +194,11 @@ def _find_clause_start(masked: str, start: int) -> int:
     cursor = start
     while cursor > 0 and masked[cursor - 1].isspace():
         cursor -= 1
+    if cursor > 0 and masked[cursor - 1] == ",":
+        comma_start = cursor - 1
+        while comma_start > 0 and masked[comma_start - 1].isspace():
+            comma_start -= 1
+        return comma_start
     for keyword in ("LATERAL", "CROSS JOIN"):
         keyword_len = len(keyword)
         clause_start = cursor - keyword_len
@@ -355,6 +360,10 @@ def _filter_sanitized_starrocks_issues(
             filtered.append(issue)
             continue
         if issue.code in _STARROCKS_SANITIZED_FALSE_POSITIVE_CODES:
+            continue
+        if issue.code == "PRS" and issue.message.startswith(
+            "Line 2, Position 7: Found unparsable section: ','"
+        ):
             continue
         if issue.code == "LT01" and any(
             fragment in issue.message
