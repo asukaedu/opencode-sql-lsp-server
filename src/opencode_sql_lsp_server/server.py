@@ -290,6 +290,12 @@ class OpenCodeSqlLanguageServer(LanguageServer):
             return True
         return source.count("\n") > config.max_lint_lines
 
+    def file_path_for_uri(self, uri: str) -> str | None:
+        try:
+            return to_fs_path(uri)
+        except Exception:
+            return None
+
     async def run_lint_and_publish(
         self,
         uri: str,
@@ -307,6 +313,8 @@ class OpenCodeSqlLanguageServer(LanguageServer):
         config = self.document_config(uri)
         loop = asyncio.get_running_loop()
 
+        file_path = self.file_path_for_uri(uri)
+
         try:
             issues = await loop.run_in_executor(
                 self.thread_pool,
@@ -314,6 +322,7 @@ class OpenCodeSqlLanguageServer(LanguageServer):
                     source,
                     dialect=dialect,
                     excluded_rules=config.excluded_rules,
+                    file_path=file_path,
                 ),
             )
         except asyncio.CancelledError:
@@ -387,7 +396,8 @@ def initialize(ls: OpenCodeSqlLanguageServer, params: InitializeParams) -> None:
         if r not in seen:
             seen.add(r)
             deduped.append(r)
-    ls.set_workspace_roots(deduped)
+    if deduped:
+        ls.set_workspace_roots(deduped)
 
 
 @server.feature(TEXT_DOCUMENT_DID_OPEN)
@@ -452,10 +462,13 @@ def formatting(
         return []
 
     dialect = ls.cached_dialect_for_document(uri)
+    file_path = ls.file_path_for_uri(uri)
     try:
-        formatted = format_sql(doc.source, dialect=dialect)
+        formatted = format_sql(doc.source, dialect=dialect, file_path=file_path)
     except Exception as e:
         ls.report_formatting_failure(e)
+        return []
+    if formatted == doc.source:
         return []
     edit_range = full_document_range(doc)
     return [TextEdit(range=edit_range, new_text=formatted)]
@@ -511,10 +524,13 @@ def code_action(
         return []
 
     dialect = ls.cached_dialect_for_document(uri)
+    file_path = ls.file_path_for_uri(uri)
     try:
-        formatted = format_sql(doc.source, dialect=dialect)
+        formatted = format_sql(doc.source, dialect=dialect, file_path=file_path)
     except Exception as e:
         ls.report_formatting_failure(e)
+        return []
+    if formatted == doc.source:
         return []
 
     return [

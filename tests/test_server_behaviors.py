@@ -8,13 +8,17 @@ from typing import cast
 
 from lsprotocol.types import CodeActionContext, CodeActionParams, Position, Range
 from lsprotocol.types import (
+    ClientCapabilities,
     CompletionParams,
+    Diagnostic,
     DocumentFormattingParams,
     FormattingOptions,
     HoverParams,
     MarkupContent,
     PublishDiagnosticsParams,
+    TextEdit,
     TextDocumentIdentifier,
+    InitializeParams,
 )
 import pytest
 from pytest import MonkeyPatch
@@ -63,6 +67,30 @@ def test_cached_dialect_for_document_prefers_most_specific_workspace(
     )
 
     language_server.set_workspace_roots([str(outer), str(inner)])
+
+    assert language_server.cached_dialect_for_document(target.as_uri()) == "trino"
+
+
+def test_initialize_preserves_cli_workspace_override_when_client_roots_missing(
+    tmp_path: Path,
+) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config_dir = workspace / ".opencode"
+    config_dir.mkdir()
+    _ = (config_dir / "sql-lsp.json").write_text(
+        '{"defaultDialect": "trino"}\n', encoding="utf-8"
+    )
+    target = workspace / "query.sql"
+    _ = target.write_text("SELECT 1\n", encoding="utf-8")
+
+    language_server.set_workspace_root(str(workspace))
+
+    server_module.initialize(
+        language_server,
+        InitializeParams(capabilities=ClientCapabilities()),
+    )
 
     assert language_server.cached_dialect_for_document(target.as_uri()) == "trino"
 
@@ -130,9 +158,12 @@ def test_formatting_reports_failure_and_returns_empty_edits(
     def report_failure(error: Exception) -> None:
         reported.append(str(error))
 
-    def raise_format_error(sql: str, *, dialect: str) -> str:
+    def raise_format_error(
+        sql: str, *, dialect: str, file_path: str | None = None
+    ) -> str:
         assert sql == "SELECT 1\n"
         assert dialect == "starrocks"
+        assert file_path == "/tmp/query.sql"
         raise RuntimeError("format boom")
 
     monkeypatch.setattr(language_server, "get_text_document", get_document)
@@ -150,6 +181,64 @@ def test_formatting_reports_failure_and_returns_empty_edits(
 
     assert result == []
     assert reported == ["format boom"]
+
+
+def test_formatting_success_returns_full_document_edit(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    document = FakeDocument("SELECT  1\n")
+
+    monkeypatch.setattr(language_server, "get_text_document", lambda uri: document)
+    monkeypatch.setattr(
+        language_server, "cached_dialect_for_document", lambda uri: "starrocks"
+    )
+    monkeypatch.setattr(
+        server_module,
+        "format_sql",
+        lambda sql, *, dialect, file_path=None: "SELECT 1\n",
+    )
+
+    result = server_module.formatting(
+        language_server,
+        DocumentFormattingParams(
+            text_document=TextDocumentIdentifier(uri="file:///tmp/query.sql"),
+            options=FormattingOptions(tab_size=2, insert_spaces=True),
+        ),
+    )
+
+    assert len(result) == 1
+    assert result[0].new_text == "SELECT 1\n"
+    assert result[0].range == Range(
+        start=Position(line=0, character=0), end=Position(line=0, character=9)
+    )
+
+
+def test_formatting_returns_empty_edits_when_sql_is_unchanged(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    document = FakeDocument("SELECT 1\n")
+
+    monkeypatch.setattr(language_server, "get_text_document", lambda uri: document)
+    monkeypatch.setattr(
+        language_server, "cached_dialect_for_document", lambda uri: "starrocks"
+    )
+    monkeypatch.setattr(
+        server_module,
+        "format_sql",
+        lambda sql, *, dialect, file_path=None: "SELECT 1\n",
+    )
+
+    result = server_module.formatting(
+        language_server,
+        DocumentFormattingParams(
+            text_document=TextDocumentIdentifier(uri="file:///tmp/query.sql"),
+            options=FormattingOptions(tab_size=2, insert_spaces=True),
+        ),
+    )
+
+    assert result == []
 
 
 def test_run_lint_and_publish_uses_configured_excluded_rules(
@@ -172,11 +261,16 @@ def test_run_lint_and_publish_uses_configured_excluded_rules(
         return type("ConfigLike", (), {"excluded_rules": ("LT05", "ST06")})()
 
     def fake_lint(
-        sql: str, *, dialect: str, excluded_rules: tuple[str, ...]
+        sql: str,
+        *,
+        dialect: str,
+        excluded_rules: tuple[str, ...],
+        file_path: str | None,
     ) -> list[object]:
         assert sql == "SELECT 1\n"
         assert dialect == "starrocks"
         assert excluded_rules == ("LT05", "ST06")
+        assert file_path == "/tmp/query.sql"
         return []
 
     monkeypatch.setattr(language_server, "get_text_document", get_document)
@@ -188,6 +282,47 @@ def test_run_lint_and_publish_uses_configured_excluded_rules(
     monkeypatch.setattr(server_module, "lint_issues", fake_lint)
 
     asyncio.run(language_server.run_lint_and_publish("file:///tmp/query.sql", None))
+
+    assert len(published) == 1
+    assert published[0].diagnostics == []
+
+
+def test_run_lint_and_publish_uses_none_for_non_file_uri(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    document = FakeDocument("SELECT 1\n")
+    published: list[PublishDiagnosticsParams] = []
+
+    monkeypatch.setattr(language_server, "get_text_document", lambda uri: document)
+    monkeypatch.setattr(
+        language_server, "cached_dialect_for_document", lambda uri: "starrocks"
+    )
+    monkeypatch.setattr(
+        language_server,
+        "document_config",
+        lambda uri: type("ConfigLike", (), {"excluded_rules": ("LT05",)})(),
+    )
+    monkeypatch.setattr(
+        language_server, "text_document_publish_diagnostics", published.append
+    )
+
+    def fake_lint(
+        sql: str,
+        *,
+        dialect: str,
+        excluded_rules: tuple[str, ...],
+        file_path: str | None,
+    ) -> list[object]:
+        assert sql == "SELECT 1\n"
+        assert dialect == "starrocks"
+        assert excluded_rules == ("LT05",)
+        assert file_path is None
+        return []
+
+    monkeypatch.setattr(server_module, "lint_issues", fake_lint)
+
+    asyncio.run(language_server.run_lint_and_publish("untitled:query.sql", None))
 
     assert len(published) == 1
     assert published[0].diagnostics == []
@@ -211,9 +346,12 @@ def test_code_action_reports_failure_and_returns_no_actions(
     def report_failure(error: Exception) -> None:
         reported.append(str(error))
 
-    def raise_action_error(sql: str, *, dialect: str) -> str:
+    def raise_action_error(
+        sql: str, *, dialect: str, file_path: str | None = None
+    ) -> str:
         assert sql == "SELECT 1\n"
         assert dialect == "starrocks"
+        assert file_path == "/tmp/query.sql"
         raise RuntimeError("action boom")
 
     monkeypatch.setattr(language_server, "get_text_document", get_document)
@@ -234,6 +372,89 @@ def test_code_action_reports_failure_and_returns_no_actions(
 
     assert result == []
     assert reported == ["action boom"]
+
+
+def test_code_action_returns_fix_all_edit_when_format_changes_document(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    document = FakeDocument("SELECT  1\n")
+    diagnostics = [
+        Diagnostic(
+            range=Range(
+                start=Position(line=0, character=0),
+                end=Position(line=0, character=1),
+            ),
+            message="fmt",
+        )
+    ]
+
+    monkeypatch.setattr(language_server, "get_text_document", lambda uri: document)
+    monkeypatch.setattr(
+        language_server, "cached_dialect_for_document", lambda uri: "starrocks"
+    )
+    monkeypatch.setattr(
+        server_module,
+        "format_sql",
+        lambda sql, *, dialect, file_path=None: "SELECT 1\n",
+    )
+
+    result = server_module.code_action(
+        language_server,
+        CodeActionParams(
+            text_document=TextDocumentIdentifier(uri="file:///tmp/query.sql"),
+            range=Range(
+                start=Position(line=0, character=0), end=Position(line=0, character=6)
+            ),
+            context=CodeActionContext(diagnostics=diagnostics),
+        ),
+    )
+
+    assert len(result) == 1
+    assert result[0].title == "Format with sqlfluff"
+    assert result[0].edit is not None
+    assert result[0].edit.changes == {
+        "file:///tmp/query.sql": [
+            TextEdit(
+                range=Range(
+                    start=Position(line=0, character=0),
+                    end=Position(line=0, character=9),
+                ),
+                new_text="SELECT 1\n",
+            )
+        ]
+    }
+    assert result[0].diagnostics == diagnostics
+
+
+def test_code_action_returns_no_actions_when_sql_is_unchanged(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    document = FakeDocument("SELECT 1\n")
+
+    monkeypatch.setattr(language_server, "get_text_document", lambda uri: document)
+    monkeypatch.setattr(
+        language_server, "cached_dialect_for_document", lambda uri: "starrocks"
+    )
+    monkeypatch.setattr(
+        server_module,
+        "format_sql",
+        lambda sql, *, dialect, file_path=None: "SELECT 1\n",
+    )
+
+    result = server_module.code_action(
+        language_server,
+        CodeActionParams(
+            text_document=TextDocumentIdentifier(uri="file:///tmp/query.sql"),
+            range=Range(
+                start=Position(line=0, character=0), end=Position(line=0, character=6)
+            ),
+            context=CodeActionContext(diagnostics=[]),
+        ),
+    )
+
+    assert result == []
 
 
 def test_completion_adds_starrocks_specific_keywords() -> None:

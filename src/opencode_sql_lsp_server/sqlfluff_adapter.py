@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, cast
 
 
 try:
-    from sqlfluff.api.simple import fix, get_simple_config
-    from sqlfluff.core import Linter
+    from sqlfluff.api.simple import get_simple_config
+    from sqlfluff.core import FluffConfig, Linter
 except Exception as e:
-    fix = None
+    FluffConfig = None
     get_simple_config = None
     Linter = None
     _sqlfluff_import_error = e
@@ -76,8 +78,29 @@ def _to_issue(violation: object) -> SqlIssue:
     )
 
 
-def _lint_once(sql: str, dialect: str) -> list[SqlIssue]:
-    if get_simple_config is None or Linter is None:
+def _config_for_sql(dialect: str, file_path: str | None):
+    if file_path:
+        if FluffConfig is None:
+            return None
+        try:
+            normalized = str(Path(file_path).expanduser())
+            if dialect:
+                return FluffConfig.from_path(
+                    normalized,
+                    overrides={"dialect": cast(Any, dialect)},
+                    require_dialect=False,
+                )
+            return FluffConfig.from_path(normalized, require_dialect=False)
+        except Exception:
+            pass
+    if get_simple_config is None:
+        return None
+    config = get_simple_config(dialect=dialect)
+    return config
+
+
+def _lint_once(sql: str, dialect: str, file_path: str | None = None) -> list[SqlIssue]:
+    if Linter is None:
         return [
             SqlIssue(
                 code=None,
@@ -87,9 +110,23 @@ def _lint_once(sql: str, dialect: str) -> list[SqlIssue]:
             )
         ]
 
-    config = get_simple_config(dialect=dialect)
+    config = _config_for_sql(dialect, file_path)
+    if config is None:
+        return [
+            SqlIssue(
+                code=None,
+                message=f"sqlfluff not available: {_sqlfluff_import_error}",
+                line=1,
+                character=0,
+            )
+        ]
     linter = Linter(config=config)
-    result = linter.lint_string_wrapped(sql)
+    if file_path:
+        result = linter.lint_string_wrapped(
+            sql, fname="stdin", stdin_filename=file_path
+        )
+    else:
+        result = linter.lint_string_wrapped(sql)
     return [_to_issue(violation) for violation in result.get_violations()]
 
 
@@ -394,19 +431,23 @@ def _normalize_formatted_sql(sql: str) -> str:
 
 
 def lint_issues(
-    sql: str, dialect: str, *, excluded_rules: tuple[str, ...] = ()
+    sql: str,
+    dialect: str,
+    *,
+    excluded_rules: tuple[str, ...] = (),
+    file_path: str | None = None,
 ) -> list[SqlIssue]:
     excluded = frozenset(
         rule.strip().upper() for rule in excluded_rules if rule.strip()
     )
     try:
-        issues = _lint_once(sql, dialect)
+        issues = _lint_once(sql, dialect, file_path)
         if dialect.casefold() != "starrocks" or not _has_prs_issue(issues):
             return _filter_excluded_rules(issues, excluded)
         spans = _find_starrocks_alias_column_list_spans(sql)
         if not spans or not _prs_issue_targets_span(sql, issues, spans):
             return _filter_excluded_rules(issues, excluded)
-        sanitized_issues = _lint_once(_sanitize_sql(sql, spans), dialect)
+        sanitized_issues = _lint_once(_sanitize_sql(sql, spans), dialect, file_path)
         if _has_prs_issue(sanitized_issues):
             return _filter_excluded_rules(issues, excluded)
         return _filter_excluded_rules(
@@ -417,8 +458,25 @@ def lint_issues(
         return [SqlIssue(code=None, message=str(e), line=1, character=0)]
 
 
-def format_sql(sql: str, dialect: str) -> str:
-    if fix is None:
+def format_sql(sql: str, dialect: str, file_path: str | None = None) -> str:
+    if Linter is None or (get_simple_config is None and FluffConfig is None):
         raise RuntimeError(f"sqlfluff not available: {_sqlfluff_import_error}")
-
-    return _normalize_formatted_sql(fix(sql, dialect=dialect))
+    config = _config_for_sql(dialect, file_path)
+    if config is None:
+        raise RuntimeError(f"sqlfluff not available: {_sqlfluff_import_error}")
+    linter = Linter(config=config)
+    if file_path:
+        result = linter.lint_string_wrapped(
+            sql, fname="stdin", fix=True, stdin_filename=file_path
+        )
+    else:
+        result = linter.lint_string_wrapped(sql, fix=True)
+    should_fix = True
+    fix_even_unparsable = config.get("fix_even_unparsable")
+    if not fix_even_unparsable:
+        _, num_filtered_errors = result.count_tmp_prs_errors()
+        if num_filtered_errors > 0:
+            should_fix = False
+    if should_fix:
+        sql = result.paths[0].files[0].fix_string()[0]
+    return _normalize_formatted_sql(sql)
