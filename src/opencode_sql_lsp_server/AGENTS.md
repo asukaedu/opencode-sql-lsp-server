@@ -77,6 +77,8 @@ opencode_sql_lsp_server/
 - `OpenCodeSqlLanguageServer` uses `max_workers=2`; per-document pending timers/tasks now live behind `DiagnosticsScheduler`.
 - Formatting replaces the full document with one `TextEdit`.
 - Default dialect is `starrocks`; overrides use glob-style path matching with normalized `/` separators.
+- StarRocks-aware completion/hover now includes common workflow phrases (materialized views, routine load, catalogs, partitioning/distribution, `UNNEST`, `JSON_EACH`).
+- `symbol_provider.py` now extracts named StarRocks entities such as materialized views, routine load jobs, catalogs, and table DDL statements instead of only anonymous statement lines.
 - The package version is exported from `__init__.py` and consumed by `OpenCodeSqlLanguageServer`.
 - Docs/workflow consistency is machine-checked by `tests/test_docs_consistency.py`.
 - The VS Code wrapper must keep its build artifacts inside `extensions/vscode-opencode-sql-lsp-wrapper/` and continue launching `opencode-sql-lsp --stdio`.

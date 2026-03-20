@@ -91,6 +91,8 @@ Dialect keys are sqlfluff dialect labels, e.g.:
 - Dialect keys (sqlfluff): `trino`, `starrocks`.
 - By default, style-only sqlfluff rules `LT05` (long lines) and `ST06` (select target ordering) are excluded to avoid noisy diagnostics for practical StarRocks queries. Override with `.opencode/sql-lsp.json` if you want a different policy.
 - The server also provides lightweight SQL keyword completion, hover help, code actions, and document/workspace symbols for agent-driven editing.
+- When `defaultDialect` resolves to `starrocks`, completion and hover include StarRocks-oriented phrases such as `CREATE MATERIALIZED VIEW`, `CREATE ROUTINE LOAD`, `CREATE CATALOG`, `INSERT OVERWRITE`, `PARTITION BY`, `DISTRIBUTED BY`, `UNNEST`, and `JSON_EACH`.
+- Document/workspace symbols recognize named StarRocks entities like materialized views, routine load jobs, catalogs, and common DDL statements, which makes multi-file agent navigation less blind than line-only statement symbols.
 - Formatting and code-action failures degrade safely to empty results and are reported through the server error channel.
 
 ## Optional performance controls
@@ -106,6 +108,17 @@ You can tune large-file lint skipping per workspace:
 ```
 
 When a document exceeds either limit, linting is skipped and the server publishes a warning diagnostic instead.
+
+## StarRocks-focused coverage
+
+The server is still intentionally lightweight, but it now covers more of the StarRocks workflow surface that matters for agent-driven editing:
+
+- lint/format delegation through `sqlfluff` with StarRocks as the degraded default dialect
+- false-positive mitigation for `LATERAL UNNEST(...) AS alias(col)` and `LATERAL JSON_EACH(...) AS alias(k, v)` patterns
+- StarRocks-aware completion/hover entries for materialized views, routine load, catalogs, partitioning/distribution clauses, and table functions
+- named document/workspace symbols for `CREATE MATERIALIZED VIEW`, `CREATE ROUTINE LOAD`, `CREATE CATALOG`, `CREATE/ALTER/DROP TABLE`, and related statements
+
+This is not a full StarRocks parser or semantic engine. It is a practical LSP layer tuned to be useful for SQL authoring agents without pretending to cover the entire StarRocks product surface.
 
 ## Verify dialects
 
