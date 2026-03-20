@@ -159,12 +159,7 @@ def diagnostics_for_uri(
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
-    venv_command = repo_root / ".venv" / "bin" / "opencode-sql-lsp"
-    command = (
-        str(venv_command) if venv_command.exists() else shutil.which("opencode-sql-lsp")
-    )
-    if command is None:
-        raise RuntimeError("opencode-sql-lsp executable not found")
+    command = [sys.executable, "-m", "opencode_sql_lsp_server.cli"]
     base = Path(os.environ.get("WORKSPACE", "/tmp/sql-lsp-workspace")).resolve()
     base.mkdir(parents=True, exist_ok=True)
 
@@ -186,6 +181,8 @@ def main() -> int:
     lateral_unnest_file = workspace_a / "lateral_unnest.sql"
     json_each_file = workspace_a / "json_each.sql"
     invalid_lateral_unnest_file = workspace_a / "broken_lateral_unnest.sql"
+    materialized_view_file = workspace_a / "mv.sql"
+    routine_load_file = workspace_a / "routine_load.sql"
     _ = trino_file.write_text("SELECT 1\n", encoding="utf-8")
     _ = starrocks_file.write_text("SELECT 1\n", encoding="utf-8")
     _ = invalid_file.write_text("SELECT * FROM", encoding="utf-8")
@@ -198,6 +195,14 @@ def main() -> int:
     )
     _ = invalid_lateral_unnest_file.write_text(
         "SELECT *\nFROM t, LATERAL UNNEST(arr) AS u(x)\nWHERE\n",
+        encoding="utf-8",
+    )
+    _ = materialized_view_file.write_text(
+        "CREATE MATERIALIZED VIEW mv_sales AS\nSELECT city, SUM(amount) FROM sales GROUP BY city\n",
+        encoding="utf-8",
+    )
+    _ = routine_load_file.write_text(
+        'CREATE ROUTINE LOAD load_orders ON orders\nFROM KAFKA\nPROPERTIES("desired_concurrent_number" = "1")\n',
         encoding="utf-8",
     )
 
@@ -225,17 +230,22 @@ def main() -> int:
     large_file = workspace_d / "huge.sql"
     _ = large_file.write_text("SELECT\n1\nFROM\nfoo\n", encoding="utf-8")
 
+    child_env = os.environ.copy()
+    existing_pythonpath = child_env.get("PYTHONPATH")
+    repo_pythonpath = str(repo_root / "src")
+    child_env["PYTHONPATH"] = (
+        f"{repo_pythonpath}{os.pathsep}{existing_pythonpath}"
+        if existing_pythonpath
+        else repo_pythonpath
+    )
+
     proc = subprocess.Popen(
-        [
-            command,
-            "--stdio",
-            "--workspace",
-            str(workspace_a),
-        ],
+        [*command, "--stdio", "--workspace", str(workspace_a)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=repo_root,
+        env=child_env,
     )
     if proc.stdin is None or proc.stdout is None:
         raise RuntimeError("Failed to open stdio pipes")
@@ -297,6 +307,8 @@ def main() -> int:
     did_open(lateral_unnest_file)
     did_open(json_each_file)
     did_open(invalid_lateral_unnest_file)
+    did_open(materialized_view_file)
+    did_open(routine_load_file)
     did_open(b_file)
     did_open(c_file)
     did_open(large_file)
@@ -322,6 +334,10 @@ def main() -> int:
         if isinstance(item, dict)
     ]
     assert has_matching_label(completion_items, "SELECT"), completion_items
+    assert has_matching_label(completion_items, "CREATE MATERIALIZED VIEW"), (
+        completion_items
+    )
+    assert has_matching_label(completion_items, "CREATE ROUTINE LOAD"), completion_items
 
     req_id += 1
     hover_resp = request(
@@ -340,6 +356,27 @@ def main() -> int:
     assert isinstance(hover_result, dict), hover_resp
 
     req_id += 1
+    hover_starrocks_resp = request(
+        stdin,
+        stdout,
+        req_id,
+        "textDocument/hover",
+        {
+            "textDocument": {"uri": materialized_view_file.as_uri()},
+            "position": {"line": 0, "character": 10},
+        },
+        notifications,
+    )
+    assert hover_starrocks_resp.get("id") == req_id, hover_starrocks_resp
+    hover_starrocks_result = hover_starrocks_resp.get("result")
+    assert isinstance(hover_starrocks_result, dict), hover_starrocks_resp
+    hover_starrocks_contents = hover_starrocks_result.get("contents")
+    assert isinstance(hover_starrocks_contents, dict), hover_starrocks_result
+    hover_starrocks_value = hover_starrocks_contents.get("value")
+    assert isinstance(hover_starrocks_value, str), hover_starrocks_contents
+    assert "CREATE MATERIALIZED VIEW" in hover_starrocks_value
+
+    req_id += 1
     symbol_resp = request(
         stdin,
         stdout,
@@ -354,6 +391,23 @@ def main() -> int:
     assert symbol_result, symbol_resp
 
     req_id += 1
+    starrocks_symbol_resp = request(
+        stdin,
+        stdout,
+        req_id,
+        "textDocument/documentSymbol",
+        {"textDocument": {"uri": materialized_view_file.as_uri()}},
+        notifications,
+    )
+    assert starrocks_symbol_resp.get("id") == req_id, starrocks_symbol_resp
+    starrocks_symbol_result = starrocks_symbol_resp.get("result")
+    assert isinstance(starrocks_symbol_result, list), starrocks_symbol_resp
+    assert any(
+        isinstance(item, dict) and item.get("name") == "Materialized view mv_sales"
+        for item in starrocks_symbol_result
+    ), starrocks_symbol_result
+
+    req_id += 1
     workspace_symbol_resp = request(
         stdin,
         stdout,
@@ -366,6 +420,27 @@ def main() -> int:
     workspace_symbol_result = workspace_symbol_resp.get("result")
     assert isinstance(workspace_symbol_result, list), workspace_symbol_resp
     assert workspace_symbol_result, workspace_symbol_resp
+
+    req_id += 1
+    workspace_symbol_starrocks_resp = request(
+        stdin,
+        stdout,
+        req_id,
+        "workspace/symbol",
+        {"query": "mv_sales"},
+        notifications,
+    )
+    assert workspace_symbol_starrocks_resp.get("id") == req_id, (
+        workspace_symbol_starrocks_resp
+    )
+    workspace_symbol_starrocks_result = workspace_symbol_starrocks_resp.get("result")
+    assert isinstance(workspace_symbol_starrocks_result, list), (
+        workspace_symbol_starrocks_resp
+    )
+    assert any(
+        isinstance(item, dict) and item.get("name") == "Materialized view mv_sales"
+        for item in workspace_symbol_starrocks_result
+    ), workspace_symbol_starrocks_result
 
     req_id += 1
     code_action_resp = request(

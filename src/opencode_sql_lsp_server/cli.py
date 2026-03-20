@@ -33,3 +33,7 @@ def main() -> None:
         server.set_workspace_root(args.workspace)
 
     server.start_io()
+
+
+if __name__ == "__main__":
+    main()
