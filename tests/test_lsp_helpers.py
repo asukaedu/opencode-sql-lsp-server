@@ -46,3 +46,27 @@ def test_statement_symbols_falls_back_to_file_symbol_for_blank_document() -> Non
     assert result[0].name == "SQL Script"
     assert result[0].kind == SymbolKind.File
     assert result[0].range == full_document_range(document)
+
+
+def test_statement_symbols_extracts_named_starrocks_entities() -> None:
+    document = cast(
+        TextDocumentLike,
+        FakeDocument(
+            "CREATE MATERIALIZED VIEW mv_sales AS SELECT 1\n"
+            "CREATE ROUTINE LOAD load_orders ON t PROPERTIES()\n"
+            "CREATE CATALOG hive_catalog PROPERTIES()\n"
+        ),
+    )
+
+    result = statement_symbols(document)
+
+    assert [symbol.name for symbol in result] == [
+        "Materialized view mv_sales",
+        "Routine load job load_orders",
+        "Catalog hive_catalog",
+    ]
+    assert [symbol.detail for symbol in result] == [
+        "Materialized view",
+        "Routine load job",
+        "Catalog",
+    ]

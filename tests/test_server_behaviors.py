@@ -4,11 +4,15 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import final
+from typing import cast
 
 from lsprotocol.types import CodeActionContext, CodeActionParams, Position, Range
 from lsprotocol.types import (
+    CompletionParams,
     DocumentFormattingParams,
     FormattingOptions,
+    HoverParams,
+    MarkupContent,
     PublishDiagnosticsParams,
     TextDocumentIdentifier,
 )
@@ -230,3 +234,75 @@ def test_code_action_reports_failure_and_returns_no_actions(
 
     assert result == []
     assert reported == ["action boom"]
+
+
+def test_completion_adds_starrocks_specific_keywords() -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+
+    monkeypatch = MonkeyPatch()
+    monkeypatch.setattr(
+        language_server, "cached_dialect_for_document", lambda uri: "starrocks"
+    )
+    try:
+        result = server_module.completion(
+            language_server,
+            CompletionParams(
+                text_document=TextDocumentIdentifier(uri="file:///tmp/query.sql"),
+                position=Position(line=0, character=0),
+            ),
+        )
+    finally:
+        monkeypatch.undo()
+
+    labels = {item.label for item in result}
+    assert "CREATE MATERIALIZED VIEW" in labels
+    assert "CREATE ROUTINE LOAD" in labels
+    assert "UNNEST" in labels
+
+
+def test_completion_omits_starrocks_only_keywords_for_other_dialects() -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+
+    monkeypatch = MonkeyPatch()
+    monkeypatch.setattr(
+        language_server, "cached_dialect_for_document", lambda uri: "trino"
+    )
+    try:
+        result = server_module.completion(
+            language_server,
+            CompletionParams(
+                text_document=TextDocumentIdentifier(uri="file:///tmp/query.sql"),
+                position=Position(line=0, character=0),
+            ),
+        )
+    finally:
+        monkeypatch.undo()
+
+    labels = {item.label for item in result}
+    assert "SELECT" in labels
+    assert "CREATE MATERIALIZED VIEW" not in labels
+    assert "CREATE ROUTINE LOAD" not in labels
+
+
+def test_hover_prefers_longest_matching_phrase(monkeypatch: MonkeyPatch) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    document = FakeDocument("SELECT * FROM t GROUP BY city\n")
+
+    monkeypatch.setattr(language_server, "get_text_document", lambda uri: document)
+    monkeypatch.setattr(
+        language_server, "cached_dialect_for_document", lambda uri: "starrocks"
+    )
+
+    result = server_module.hover(
+        language_server,
+        HoverParams(
+            text_document=TextDocumentIdentifier(uri="file:///tmp/query.sql"),
+            position=Position(line=0, character=22),
+        ),
+    )
+
+    assert result is not None
+    assert result.range is not None
+    assert result.range.start.character == 16
+    assert result.range.end.character == 24
+    assert "**GROUP BY** (starrocks)" in cast(MarkupContent, result.contents).value

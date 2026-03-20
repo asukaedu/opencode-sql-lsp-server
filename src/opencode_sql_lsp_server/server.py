@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import re
 from typing import Final, cast
 
 from lsprotocol.types import (
@@ -68,7 +69,7 @@ from .workspace_config import (
 
 _DID_CHANGE_DEBOUNCE_S = 0.25
 
-_KEYWORD_DETAILS: Final[dict[str, str]] = {
+_COMMON_KEYWORD_DETAILS: Final[dict[str, str]] = {
     "SELECT": "Query rows from a table or subquery.",
     "FROM": "Choose the source relation for the query.",
     "WHERE": "Filter rows before projection or aggregation.",
@@ -83,16 +84,84 @@ _KEYWORD_DETAILS: Final[dict[str, str]] = {
     "WITH": "Start a common table expression (CTE).",
 }
 
-_KEYWORD_COMPLETIONS: Final[list[CompletionItem]] = [
-    CompletionItem(
-        label=keyword,
-        kind=CompletionItemKind.Keyword,
-        detail="SQL keyword",
-        documentation=description,
-        insert_text=keyword,
-    )
-    for keyword, description in _KEYWORD_DETAILS.items()
-]
+_STARROCKS_KEYWORD_DETAILS: Final[dict[str, str]] = {
+    "INSERT OVERWRITE": "Replace data in the target table or partition with query output.",
+    "CREATE VIEW": "Define a reusable logical query.",
+    "CREATE MATERIALIZED VIEW": "Persist a query result for StarRocks acceleration.",
+    "REFRESH MATERIALIZED VIEW": "Refresh a StarRocks materialized view manually.",
+    "ALTER TABLE": "Change an existing table schema or properties.",
+    "DROP TABLE": "Remove a table definition and its data.",
+    "PARTITION BY": "Define StarRocks table partitioning columns or expressions.",
+    "DISTRIBUTED BY": "Define StarRocks bucket distribution for table storage.",
+    "PROPERTIES": "Attach StarRocks engine or load options as key/value pairs.",
+    "CREATE ROUTINE LOAD": "Create a continuous ingestion job from an external stream.",
+    "STOP ROUTINE LOAD": "Stop a StarRocks routine load job.",
+    "PAUSE ROUTINE LOAD": "Pause a StarRocks routine load job.",
+    "RESUME ROUTINE LOAD": "Resume a paused StarRocks routine load job.",
+    "SUBMIT TASK": "Submit an asynchronous StarRocks task such as manual refresh work.",
+    "CREATE CATALOG": "Register an external catalog for federated querying.",
+    "UNNEST": "Expand an array or collection into rows in the FROM clause.",
+    "JSON_EACH": "Expand a JSON object into key/value rows in the FROM clause.",
+}
+
+
+def _keyword_details_for_dialect(dialect: str) -> dict[str, str]:
+    if dialect.casefold() == "starrocks":
+        return {**_COMMON_KEYWORD_DETAILS, **_STARROCKS_KEYWORD_DETAILS}
+    return dict(_COMMON_KEYWORD_DETAILS)
+
+
+def _completion_items_for_dialect(dialect: str) -> list[CompletionItem]:
+    details = _keyword_details_for_dialect(dialect)
+    return [
+        CompletionItem(
+            label=keyword,
+            kind=CompletionItemKind.Keyword,
+            detail=f"SQL keyword ({dialect})",
+            documentation=description,
+            insert_text=keyword,
+        )
+        for keyword, description in details.items()
+    ]
+
+
+def _is_keyword_boundary(char: str) -> bool:
+    return not (char.isalnum() or char == "_")
+
+
+def _keyword_hover_match(
+    doc: TextDocumentLike, position: Position, dialect: str
+) -> tuple[str, str, Range] | None:
+    if position.line < 0 or position.line >= len(doc.lines):
+        return None
+    line_text = doc.lines[position.line]
+    if not line_text:
+        return None
+    line_upper = line_text.upper()
+    for keyword, description in sorted(
+        _keyword_details_for_dialect(dialect).items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        pattern = re.escape(keyword)
+        for match in re.finditer(pattern, line_upper):
+            start = match.start()
+            end = match.end()
+            if start > 0 and not _is_keyword_boundary(line_upper[start - 1]):
+                continue
+            if end < len(line_upper) and not _is_keyword_boundary(line_upper[end]):
+                continue
+            if not (start <= position.character < end):
+                continue
+            return (
+                keyword,
+                description,
+                Range(
+                    start=Position(line=position.line, character=start),
+                    end=Position(line=position.line, character=end),
+                ),
+            )
+    return None
 
 
 class OpenCodeSqlLanguageServer(LanguageServer):
@@ -397,16 +466,7 @@ def completion(
     ls: OpenCodeSqlLanguageServer, params: CompletionParams
 ) -> list[CompletionItem]:
     dialect = ls.cached_dialect_for_document(params.text_document.uri)
-    return [
-        CompletionItem(
-            label=item.label,
-            kind=item.kind,
-            detail=f"{item.detail} ({dialect})",
-            documentation=item.documentation,
-            insert_text=item.insert_text,
-        )
-        for item in _KEYWORD_COMPLETIONS
-    ]
+    return _completion_items_for_dialect(dialect)
 
 
 @server.feature(TEXT_DOCUMENT_HOVER)
@@ -417,16 +477,19 @@ def hover(ls: OpenCodeSqlLanguageServer, params: HoverParams) -> Hover | None:
         ls.report_server_error(e, PyglsError)
         return None
 
-    token_info = word_at_position(doc, params.position)
-    if token_info is None:
-        return None
-
-    token, token_range = token_info
-    description = _KEYWORD_DETAILS.get(token)
-    if description is None:
-        return None
-
     dialect = ls.cached_dialect_for_document(params.text_document.uri)
+    phrase_match = _keyword_hover_match(doc, params.position, dialect)
+    if phrase_match is not None:
+        token, description, token_range = phrase_match
+    else:
+        token_info = word_at_position(doc, params.position)
+        if token_info is None:
+            return None
+        token, token_range = token_info
+        description = _keyword_details_for_dialect(dialect).get(token)
+        if description is None:
+            return None
+
     return Hover(
         contents=MarkupContent(
             kind=MarkupKind.Markdown,
