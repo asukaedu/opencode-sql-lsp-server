@@ -28,6 +28,23 @@ def test_best_root_for_uri_prefers_most_specific_workspace(tmp_path: Path) -> No
     assert result == inner.resolve()
 
 
+def test_best_root_for_uri_resolves_symlinked_file_to_real_workspace(
+    tmp_path: Path,
+) -> None:
+    outer = tmp_path / "workspace"
+    outer.mkdir()
+    target = outer / "query.sql"
+    _ = target.write_text("SELECT 1\n", encoding="utf-8")
+    alias_dir = tmp_path / "links"
+    alias_dir.mkdir()
+    alias = alias_dir / "query.sql"
+    alias.symlink_to(target)
+
+    result = best_root_for_uri([outer.resolve()], alias.as_uri())
+
+    assert result == outer.resolve()
+
+
 def test_config_cache_entry_reuses_last_good_config_on_invalid_reload(
     tmp_path: Path,
 ) -> None:

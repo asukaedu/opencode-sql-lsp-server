@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import select
-import shutil
 import subprocess
 import sys
 import time
@@ -183,7 +182,7 @@ def main() -> int:
     invalid_lateral_unnest_file = workspace_a / "broken_lateral_unnest.sql"
     materialized_view_file = workspace_a / "mv.sql"
     routine_load_file = workspace_a / "routine_load.sql"
-    _ = trino_file.write_text("SELECT 1\n", encoding="utf-8")
+    _ = trino_file.write_text("select  1\n", encoding="utf-8")
     _ = starrocks_file.write_text("SELECT 1\n", encoding="utf-8")
     _ = invalid_file.write_text("SELECT * FROM", encoding="utf-8")
     _ = lateral_unnest_file.write_text(

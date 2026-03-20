@@ -79,3 +79,15 @@ def test_load_falls_back_for_blank_dialect_and_non_positive_limits(
     assert config.max_lint_lines == defaults.max_lint_lines
     assert config.max_lint_bytes == defaults.max_lint_bytes
     assert config.excluded_rules == defaults.excluded_rules
+
+
+def test_dialect_for_path_matches_windows_style_patterns_with_spaces() -> None:
+    config = SqlLspConfig(
+        default_dialect="starrocks",
+        overrides={"queries\\space dir\\*.sql": "trino"},
+        max_lint_lines=100,
+        max_lint_bytes=1000,
+        excluded_rules=("LT05",),
+    )
+
+    assert config.dialect_for_path("queries/space dir/example.sql") == "trino"
