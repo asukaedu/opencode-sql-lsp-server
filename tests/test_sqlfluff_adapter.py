@@ -255,6 +255,50 @@ def test_format_sql_normalizes_trailing_blank_lines(monkeypatch: MonkeyPatch) ->
     assert calls == [("SELECT 1\n", True, "/tmp/query.sql")]
 
 
+def test_format_sql_returns_original_when_fix_result_has_no_files(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    class FakeResult:
+        paths: list[object] = []
+
+        def count_tmp_prs_errors(self) -> tuple[int, int]:
+            return (0, 0)
+
+    class FakeConfig:
+        def get(self, key: str):
+            assert key == "fix_even_unparsable"
+            return False
+
+    class FakeLinter:
+        def __init__(self, *, config: object) -> None:
+            assert config is fake_config
+
+        def lint_string_wrapped(
+            self,
+            sql: str,
+            fname: str = "<string input>",
+            fix: bool = False,
+            stdin_filename: str | None = None,
+        ) -> FakeResult:
+            assert sql == "SELECT 1"
+            assert fname == "<string input>"
+            assert fix is True
+            assert stdin_filename is None
+            return FakeResult()
+
+    fake_config = FakeConfig()
+    monkeypatch.setattr(sqlfluff_adapter, "Linter", FakeLinter)
+    monkeypatch.setattr(
+        sqlfluff_adapter,
+        "_config_for_sql",
+        lambda dialect, file_path: fake_config,
+    )
+
+    formatted = sqlfluff_adapter.format_sql("SELECT 1", dialect="starrocks")
+
+    assert formatted == "SELECT 1\n"
+
+
 def test_lint_issues_uses_path_config_when_simple_config_is_unavailable(
     monkeypatch: MonkeyPatch,
 ) -> None:

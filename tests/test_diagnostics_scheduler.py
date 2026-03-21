@@ -88,3 +88,31 @@ def test_schedule_with_zero_debounce_runs_immediately() -> None:
         assert seen == [9]
 
     asyncio.run(run_test())
+
+
+def test_drop_cancels_pending_work_and_removes_document_state() -> None:
+    scheduler = DiagnosticsScheduler()
+    uri = "file:///tmp/query.sql"
+    state = scheduler.document_state(uri)
+    loop = asyncio.new_event_loop()
+
+    async def sleeper() -> None:
+        await asyncio.sleep(60)
+
+    timer = loop.call_later(60, lambda: None)
+    pending_task = loop.create_task(sleeper())
+    state.pending_timer = timer
+    state.pending_task = pending_task
+
+    try:
+        scheduler.drop(uri)
+
+        assert timer.cancelled() is True
+        assert uri not in scheduler._doc_state
+    finally:
+        if not pending_task.done():
+            _ = pending_task.cancel()
+        _ = loop.run_until_complete(
+            asyncio.gather(pending_task, return_exceptions=True)
+        )
+        loop.close()

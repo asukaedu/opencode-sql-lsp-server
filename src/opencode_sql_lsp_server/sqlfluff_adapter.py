@@ -430,6 +430,18 @@ def _normalize_formatted_sql(sql: str) -> str:
     return f"{normalized}\n"
 
 
+def _first_fixed_sql(result: object) -> str | None:
+    paths = getattr(result, "paths", ()) or ()
+    for path in paths:
+        files = getattr(path, "files", ()) or ()
+        for fixed_file in files:
+            fixed = fixed_file.fix_string()
+            candidate = fixed[0] if isinstance(fixed, tuple) else fixed
+            if isinstance(candidate, str):
+                return candidate
+    return None
+
+
 def lint_issues(
     sql: str,
     dialect: str,
@@ -478,5 +490,7 @@ def format_sql(sql: str, dialect: str, file_path: str | None = None) -> str:
         if num_filtered_errors > 0:
             should_fix = False
     if should_fix:
-        sql = result.paths[0].files[0].fix_string()[0]
+        fixed_sql = _first_fixed_sql(result)
+        if fixed_sql is not None:
+            sql = fixed_sql
     return _normalize_formatted_sql(sql)

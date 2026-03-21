@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import re
+from collections.abc import Sequence
 from typing import Final, cast
 
 from lsprotocol.types import (
@@ -15,6 +16,8 @@ from lsprotocol.types import (
     Diagnostic,
     DiagnosticSeverity,
     DidChangeTextDocumentParams,
+    DidChangeWorkspaceFoldersParams,
+    DidCloseTextDocumentParams,
     DidOpenTextDocumentParams,
     DidSaveTextDocumentParams,
     DocumentSymbol,
@@ -32,6 +35,7 @@ from lsprotocol.types import (
     TEXT_DOCUMENT_CODE_ACTION,
     TEXT_DOCUMENT_COMPLETION,
     TEXT_DOCUMENT_DID_CHANGE,
+    TEXT_DOCUMENT_DID_CLOSE,
     TEXT_DOCUMENT_DID_OPEN,
     TEXT_DOCUMENT_DID_SAVE,
     TEXT_DOCUMENT_DOCUMENT_SYMBOL,
@@ -42,6 +46,8 @@ from lsprotocol.types import (
     TextEdit,
     WORKSPACE_SYMBOL,
     WorkspaceEdit,
+    WorkspaceFolder,
+    WORKSPACE_DID_CHANGE_WORKSPACE_FOLDERS,
     WorkspaceSymbolParams,
 )
 from pygls.lsp.server import LanguageServer
@@ -448,6 +454,50 @@ def did_save(ls: OpenCodeSqlLanguageServer, params: DidSaveTextDocumentParams) -
             ls.skip_diagnostics_for_large_document(uri, version)
             return
     ls.schedule_diagnostics(uri, version, debounce_s=0.0)
+
+
+@server.feature(TEXT_DOCUMENT_DID_CLOSE)
+def did_close(
+    ls: OpenCodeSqlLanguageServer, params: DidCloseTextDocumentParams
+) -> None:
+    uri = params.text_document.uri
+    ls._diagnostics_scheduler.drop(uri)
+    ls.text_document_publish_diagnostics(
+        PublishDiagnosticsParams(uri=uri, diagnostics=[])
+    )
+
+
+def _resolved_workspace_folder_paths(folders: Sequence[WorkspaceFolder]) -> list[Path]:
+    roots: list[Path] = []
+    for folder in folders:
+        try:
+            fs_path = to_fs_path(folder.uri)
+            if not fs_path:
+                continue
+            roots.append(Path(fs_path).resolve())
+        except Exception:
+            continue
+    return roots
+
+
+@server.feature(WORKSPACE_DID_CHANGE_WORKSPACE_FOLDERS)
+def did_change_workspace_folders(
+    ls: OpenCodeSqlLanguageServer, params: DidChangeWorkspaceFoldersParams
+) -> None:
+    removed = {
+        str(root) for root in _resolved_workspace_folder_paths(params.event.removed)
+    }
+    roots = [root for root in ls._workspace_roots if str(root) not in removed]
+    seen = {str(root) for root in roots}
+
+    for root in _resolved_workspace_folder_paths(params.event.added):
+        resolved = str(root)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        roots.append(root)
+
+    ls.set_workspace_roots([str(root) for root in roots])
 
 
 @server.feature(TEXT_DOCUMENT_FORMATTING)

@@ -74,6 +74,7 @@ def config_cache_entry_for_root(
         config = SqlLspConfig.load(root)
     except Exception as error:
         if cached and cached.config:
+            cached.mtime_ns = mtime_ns
             if cached.last_error_mtime_ns != mtime_ns:
                 cached.last_error_mtime_ns = mtime_ns
                 report_server_error(error, PyglsError)

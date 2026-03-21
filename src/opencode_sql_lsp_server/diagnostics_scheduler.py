@@ -25,7 +25,7 @@ class DiagnosticsScheduler:
 
     def clear(self) -> None:
         for uri in list(self._doc_state):
-            self.reset(uri, version=None)
+            self.drop(uri)
         self._doc_state.clear()
 
     def document_state(self, uri: str) -> DocDiagnosticsState:
@@ -46,6 +46,12 @@ class DiagnosticsScheduler:
             _ = state.pending_task.cancel()
         state.pending_task = None
         return state
+
+    def drop(self, uri: str) -> None:
+        if uri not in self._doc_state:
+            return
+        _ = self.reset(uri, version=None)
+        del self._doc_state[uri]
 
     def schedule(
         self,

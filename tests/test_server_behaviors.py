@@ -11,6 +11,8 @@ from lsprotocol.types import (
     ClientCapabilities,
     CompletionParams,
     Diagnostic,
+    DidChangeWorkspaceFoldersParams,
+    DidCloseTextDocumentParams,
     DocumentFormattingParams,
     FormattingOptions,
     HoverParams,
@@ -19,6 +21,8 @@ from lsprotocol.types import (
     TextEdit,
     TextDocumentIdentifier,
     InitializeParams,
+    WorkspaceFolder,
+    WorkspaceFoldersChangeEvent,
 )
 import pytest
 from pytest import MonkeyPatch
@@ -93,6 +97,120 @@ def test_initialize_preserves_cli_workspace_override_when_client_roots_missing(
     )
 
     assert language_server.cached_dialect_for_document(target.as_uri()) == "trino"
+
+
+def test_did_close_clears_scheduler_state_and_publishes_empty_diagnostics() -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    uri = "file:///tmp/query.sql"
+    state = language_server.document_state(uri)
+    loop = asyncio.new_event_loop()
+    published: list[PublishDiagnosticsParams] = []
+
+    async def noop() -> None:
+        await asyncio.sleep(60)
+
+    timer = loop.call_later(60, lambda: None)
+    pending_task = loop.create_task(noop())
+    state.pending_timer = timer
+    state.pending_task = pending_task
+    state.dialect = "trino"
+    state.dialect_root = Path("/tmp")
+    state.dialect_config_mtime_ns = 99
+
+    def publish(params: PublishDiagnosticsParams) -> None:
+        published.append(params)
+
+    language_server.text_document_publish_diagnostics = publish
+
+    try:
+        server_module.did_close(
+            language_server,
+            DidCloseTextDocumentParams(
+                text_document=TextDocumentIdentifier(uri=uri),
+            ),
+        )
+
+        assert timer.cancelled() is True
+        assert uri not in language_server._diagnostics_scheduler._doc_state
+        assert len(published) == 1
+        assert published[0] == PublishDiagnosticsParams(uri=uri, diagnostics=[])
+    finally:
+        if not pending_task.done():
+            _ = pending_task.cancel()
+        _ = loop.run_until_complete(
+            asyncio.gather(pending_task, return_exceptions=True)
+        )
+        loop.close()
+
+
+def test_did_change_workspace_folders_refreshes_workspace_roots(
+    tmp_path: Path,
+) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    outer = tmp_path / "workspace"
+    inner = outer / "nested"
+    inner.mkdir(parents=True)
+    target = inner / "query.sql"
+    _ = target.write_text("SELECT 1\n", encoding="utf-8")
+    outer_config = outer / ".opencode"
+    outer_config.mkdir()
+    _ = (outer_config / "sql-lsp.json").write_text(
+        '{"defaultDialect": "starrocks"}\n', encoding="utf-8"
+    )
+    inner_config = inner / ".opencode"
+    inner_config.mkdir()
+    _ = (inner_config / "sql-lsp.json").write_text(
+        '{"defaultDialect": "trino"}\n', encoding="utf-8"
+    )
+
+    language_server.set_workspace_roots([str(outer)])
+
+    assert language_server.cached_dialect_for_document(target.as_uri()) == "starrocks"
+
+    server_module.did_change_workspace_folders(
+        language_server,
+        DidChangeWorkspaceFoldersParams(
+            event=WorkspaceFoldersChangeEvent(
+                added=[WorkspaceFolder(uri=inner.as_uri(), name="nested")],
+                removed=[],
+            )
+        ),
+    )
+
+    assert language_server.cached_dialect_for_document(target.as_uri()) == "trino"
+
+    server_module.did_change_workspace_folders(
+        language_server,
+        DidChangeWorkspaceFoldersParams(
+            event=WorkspaceFoldersChangeEvent(
+                added=[],
+                removed=[WorkspaceFolder(uri=inner.as_uri(), name="nested")],
+            )
+        ),
+    )
+
+    assert language_server.cached_dialect_for_document(target.as_uri()) == "starrocks"
+
+
+def test_did_change_workspace_folders_ignores_invalid_folder_uris(
+    tmp_path: Path,
+) -> None:
+    language_server = server_module.OpenCodeSqlLanguageServer()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    language_server.set_workspace_roots([str(workspace)])
+
+    server_module.did_change_workspace_folders(
+        language_server,
+        DidChangeWorkspaceFoldersParams(
+            event=WorkspaceFoldersChangeEvent(
+                added=[WorkspaceFolder(uri="untitled:workspace", name="bad")],
+                removed=[],
+            )
+        ),
+    )
+
+    assert language_server._workspace_roots == [workspace.resolve()]
 
 
 def test_skip_diagnostics_for_large_document_resets_state_and_publishes_warning() -> (

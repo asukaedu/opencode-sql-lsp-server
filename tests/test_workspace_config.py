@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,94 @@ def test_config_cache_entry_reuses_last_good_config_on_invalid_reload(
 
     assert second.config.default_dialect == "trino"
     assert reported
+
+
+def test_config_cache_entry_updates_cached_mtime_for_invalid_reload(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    config_dir = root / ".opencode"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "sql-lsp.json"
+
+    def write_with_unique_mtime(raw: str) -> int:
+        _ = config_path.write_text(raw, encoding="utf-8")
+        mtime_ns = config_path.stat().st_mtime_ns + 1
+        os.utime(config_path, ns=(mtime_ns, mtime_ns))
+        return mtime_ns
+
+    _ = write_with_unique_mtime('{"defaultDialect": "trino"}\n')
+
+    reported: list[str] = []
+
+    def report(error: Exception, error_type: type[PyglsError]) -> None:
+        assert error_type is PyglsError
+        reported.append(str(error))
+
+    cache: dict[Path, ConfigCacheEntry] = {}
+    _ = config_cache_entry_for_root(
+        root.resolve(),
+        config_cache=cache,
+        report_server_error=report,
+    )
+
+    invalid_mtime = write_with_unique_mtime("{ invalid json }\n")
+    second = config_cache_entry_for_root(
+        root.resolve(),
+        config_cache=cache,
+        report_server_error=report,
+    )
+    third = config_cache_entry_for_root(
+        root.resolve(),
+        config_cache=cache,
+        report_server_error=report,
+    )
+
+    assert second.config.default_dialect == "trino"
+    assert second.mtime_ns == invalid_mtime
+    assert third is second
+    assert len(reported) == 1
+
+
+def test_config_cache_entry_recovers_after_invalid_reload_is_fixed(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    config_dir = root / ".opencode"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "sql-lsp.json"
+
+    def write_with_unique_mtime(raw: str) -> None:
+        _ = config_path.write_text(raw, encoding="utf-8")
+        mtime_ns = config_path.stat().st_mtime_ns + 1
+        os.utime(config_path, ns=(mtime_ns, mtime_ns))
+
+    write_with_unique_mtime('{"defaultDialect": "trino"}\n')
+
+    reported: list[str] = []
+    cache: dict[Path, ConfigCacheEntry] = {}
+
+    _ = config_cache_entry_for_root(
+        root.resolve(),
+        config_cache=cache,
+        report_server_error=lambda error, error_type: reported.append(str(error)),
+    )
+    write_with_unique_mtime("{ invalid json }\n")
+    _ = config_cache_entry_for_root(
+        root.resolve(),
+        config_cache=cache,
+        report_server_error=lambda error, error_type: reported.append(str(error)),
+    )
+
+    write_with_unique_mtime('{"defaultDialect": "ansi"}\n')
+    recovered = config_cache_entry_for_root(
+        root.resolve(),
+        config_cache=cache,
+        report_server_error=lambda error, error_type: reported.append(str(error)),
+    )
+
+    assert reported
+    assert recovered.config.default_dialect == "ansi"
 
 
 def test_config_cache_entry_uses_defaults_when_config_missing(tmp_path: Path) -> None:
